@@ -183,6 +183,41 @@ Then run:
 
 ---
 
+## Navigation: `navmenu` and human/quick modes
+
+Two ways to reach a screen:
+
+- **`goto http://HOST:8069/web#action=<ID>`** — the quick, deterministic jump. Hides the menu breadcrumb.
+- **`navmenu App > Section > [Group >] Item [@<actionId>]`** — navigates by *clicking* menu labels, so the trace demonstrates the real click sequence a user follows.
+
+`navmenu` matches on **rendered visible text** (exact-then-contains, case-insensitive), so translated labels work — write whatever appears on screen (this DB has Thai). It walks each `>`-separated label:
+1. opens the apps menu and clicks the **app**,
+2. clicks the **section** in the top menu bar (opens its dropdown),
+3. for the rest, matches **group headers** (non-clickable separators like "Products" — used only to scope the next label) and **leaf items** (clicked to navigate),
+
+inserting an implicit `waitidle` between navigating clicks. On any label it can't find, it prints `NOT FOUND: <label>` and lists the visible items at that level (group headers marked `[group]`) so failures are debuggable.
+
+**Mode switch** — choose per flow with the `mode` directive near the top (default is `human`):
+
+```
+mode human    # click through the menu (shows the breadcrumb) — the default
+mode quick    # short-circuit navmenu to goto #action=<id> when @<id> is given
+```
+
+In `quick` mode, `navmenu … @<id>` jumps straight to `#action=<id>`; the labels are kept for readability. If no `@<id>` is supplied, `navmenu` always clicks through regardless of mode. (`NAV_MODE=quick|human` env var is honored as a fallback if no directive is present.)
+
+Example (Odoo 14, verified against `dv_kc`):
+```
+login admin <pass>
+mode human
+navmenu Inventory > Configuration > Products > Purchase Product Group @706
+```
+The same line under `mode quick` jumps via `#action=706`. See `flows/navmenu-human.txt` and `flows/navmenu-quick.txt`.
+
+**Odoo 14 menu selectors** (verified, don't guess — re-probe with `eval`/`snapshot` on other versions): apps `.o_menu_apps a.o_app`; sections `.o_menu_sections > li > a` (`.dropdown-toggle` opens a dropdown, otherwise it's a leaf); inside a dropdown, `div.dropdown-header` = group label, `a.dropdown-item` = leaf action.
+
+---
+
 ## Debugging tips
 
 **Element not found / timeout:**

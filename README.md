@@ -61,6 +61,8 @@ See the commands reference below, then write a `flows/my-flow.txt`.
 |---|---|
 | `login <user> <pass>` | Log in — auto-skips when the saved session (`.sessions/`, per host+db) is still valid |
 | `goto <url>` | Navigate |
+| `mode human\|quick` | Navigation style for `navmenu` (default `human`) |
+| `navmenu A > B > C [@id]` | Navigate by clicking menu labels (human) or jumping to `#action=id` (quick) |
 | `click <sel>` | Click — waits for visibility |
 | `fclick <sel>` | Force click — skips visibility check |
 | `jclick <sel>` | JS click — for Odoo SPA list buttons |

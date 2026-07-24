@@ -108,6 +108,8 @@ const traceFile = path.join(tracesDir, `${label}.zip`);
   console.log('\n--- Commands ---');
   console.log('  login <user> <pass>      log in — auto-skips if the saved session is still valid');
   console.log('  goto <url>               navigate');
+  console.log('  mode human|quick         nav style for navmenu (human=click through, quick=jump via @id)');
+  console.log('  navmenu A > B > C [@id]   navigate by clicking menu labels (human) or #action=id (quick)');
   console.log('  click <sel>              standard Playwright click (waits for visibility)');
   console.log('  fclick <sel>             force click (bypasses visibility checks)');
   console.log('  jclick <sel>             JS .click() (OWL2-friendly for Odoo SPA buttons)');
@@ -167,6 +169,132 @@ const traceFile = path.join(tracesDir, `${label}.zip`);
     return Date.now() - t0;
   };
 
+  // Navigation mode: 'human' clicks through the menu; 'quick' short-circuits
+  // navmenu to goto #action=<id> when the flow supplies one (`... @<id>`).
+  // Set per-flow with the `mode` directive, or via NAV_MODE env var.
+  let navMode = (process.env.NAV_MODE || 'human').toLowerCase();
+  if (navMode !== 'human' && navMode !== 'quick') navMode = 'human';
+
+  // In-page resolver for one menu level. Matches on RENDERED visible text
+  // (exact-then-contains, case-insensitive) so translated labels (e.g. Thai)
+  // work — the flow author writes whatever appears on screen. Odoo 14 markup:
+  //   app      → .o_menu_apps a.o_app
+  //   section  → .o_menu_sections > li > a  (dropdown-toggle = opens; else leaf)
+  //   dropdown → .dropdown-header (group, not clickable) + a.dropdown-item (leaf)
+  const navPick = (spec) => page.evaluate((spec) => {
+    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const w = norm(spec.label);
+    const listText = els => els.map(e => (e.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+    if (spec.level === 'app') {
+      const items = Array.from(document.querySelectorAll('.o_menu_apps a.o_app'));
+      const el = items.find(e => norm(e.textContent) === w) || items.find(e => norm(e.textContent).includes(w));
+      if (!el) return { ok: false, candidates: listText(items) };
+      el.click();
+      return { ok: true, text: el.textContent.trim(), leaf: true };
+    }
+
+    if (spec.level === 'section') {
+      const secs = Array.from(document.querySelectorAll('.o_menu_sections > li'));
+      const getA = li => li.querySelector('a');
+      const match = secs.find(li => { const a = getA(li); return a && norm(a.textContent) === w; })
+                 || secs.find(li => { const a = getA(li); return a && norm(a.textContent).includes(w); });
+      if (!match) return { ok: false, candidates: secs.map(li => { const a = getA(li); return a ? a.textContent.trim() : ''; }).filter(Boolean) };
+      const a = getA(match);
+      const isToggle = a.classList.contains('dropdown-toggle');
+      a.click();
+      return { ok: true, text: a.textContent.trim(), leaf: !isToggle };
+    }
+
+    // level === 'dropdown' — inside the currently open section dropdown
+    const menu = document.querySelector('.o_menu_sections .dropdown-menu.show')
+              || document.querySelector('.o_menu_sections li.show .dropdown-menu')
+              || document.querySelector('.o_menu_sections .dropdown-menu');
+    if (!menu) return { ok: false, nomenu: true, candidates: [] };
+    const nodes = Array.from(menu.querySelectorAll('.dropdown-header, .dropdown-item'));
+    const headers = nodes.filter(n => n.classList.contains('dropdown-header'));
+    let items = nodes.filter(n => n.classList.contains('dropdown-item'));
+
+    // If a group header was matched previously, scope items to that group
+    // (between this header and the next) — Odoo 14 flattens groups into a
+    // single menu with .dropdown-header separators, so "Products" as an
+    // intermediate label narrows which items the next label may match.
+    if (spec.group) {
+      const gw = norm(spec.group);
+      const hidx = nodes.findIndex(n => n.classList.contains('dropdown-header') && (norm(n.textContent) === gw || norm(n.textContent).includes(gw)));
+      if (hidx !== -1) {
+        let end = nodes.length;
+        for (let j = hidx + 1; j < nodes.length; j++) { if (nodes[j].classList.contains('dropdown-header')) { end = j; break; } }
+        items = nodes.slice(hidx + 1, end).filter(n => n.classList.contains('dropdown-item'));
+      }
+    }
+
+    // Resolution order: exact item → exact header → contains item → contains
+    // header. Exact-header-before-contains-item stops "Delivery" (a group)
+    // from wrongly matching the item "Delivery Packages".
+    const clickInfo = el => ({ ok: true, text: el.textContent.trim(), kind: 'item', leaf: !el.classList.contains('dropdown-toggle') });
+    let el = items.find(e => norm(e.textContent) === w);
+    if (el) { el.click(); return clickInfo(el); }
+    let hd = headers.find(e => norm(e.textContent) === w);
+    if (hd) return { ok: true, text: hd.textContent.trim(), kind: 'header' };
+    el = items.find(e => norm(e.textContent).includes(w));
+    if (el) { el.click(); return clickInfo(el); }
+    hd = headers.find(e => norm(e.textContent).includes(w));
+    if (hd) return { ok: true, text: hd.textContent.trim(), kind: 'header' };
+
+    return { ok: false, candidates: nodes.map(n => (n.classList.contains('dropdown-header') ? '[group] ' : '') + n.textContent.trim()).filter(Boolean) };
+  }, spec);
+
+  // Walk a `>`-separated label path by clicking each menu level, with an
+  // implicit waitidle between navigating clicks. Returns true on success.
+  const navMenuWalk = async (labels) => {
+    const showCandidates = list => (list || []).forEach(c => console.log(`      · ${c}`));
+
+    // Level 0 — app: open the apps menu (for visual fidelity) then click it
+    await page.evaluate(() => { const t = document.querySelector('.o_menu_apps a.full, .o_menu_apps .dropdown-toggle'); if (t) t.click(); }).catch(() => {});
+    await page.waitForTimeout(250); // apps dropdown CSS animation (no network)
+    let r = await navPick({ level: 'app', label: labels[0] });
+    if (!r.ok) { console.log(`  navmenu NOT FOUND: "${labels[0]}" (app level)`); showCandidates(r.candidates); return false; }
+    console.log(`  navmenu → app "${r.text}"`);
+    await waitIdle();
+    if (labels.length === 1) return true;
+
+    // Level 1 — section (top menu bar of the current app)
+    r = await navPick({ level: 'section', label: labels[1] });
+    if (!r.ok) { console.log(`  navmenu NOT FOUND: "${labels[1]}" (section level)`); showCandidates(r.candidates); return false; }
+    if (r.leaf) {
+      console.log(`  navmenu → section "${r.text}" (leaf)`);
+      await waitIdle();
+      if (labels.length > 2) console.log(`  navmenu WARNING: "${r.text}" navigated but ${labels.length - 2} more label(s) remain`);
+      return true;
+    }
+    console.log(`  navmenu → opened section "${r.text}"`);
+    await page.waitForTimeout(250); // dropdown CSS animation
+
+    // Levels 2+ — inside the open dropdown (group headers + leaf items)
+    let group = null;
+    for (let i = 2; i < labels.length; i++) {
+      r = await navPick({ level: 'dropdown', label: labels[i], group });
+      if (!r.ok) {
+        console.log(`  navmenu NOT FOUND: "${labels[i]}" (under "${labels[i - 1]}")`);
+        if (r.nomenu) console.log('      (no open dropdown menu found)');
+        showCandidates(r.candidates);
+        return false;
+      }
+      const isLast = i === labels.length - 1;
+      if (r.kind === 'header') {
+        group = r.text;
+        console.log(`  navmenu → group "${r.text}"${isLast ? '  (WARNING: group header, not a clickable item)' : ''}`);
+      } else {
+        console.log(`  navmenu → item "${r.text}"${r.leaf ? '' : ' (submenu)'}`);
+        group = null;
+        if (r.leaf) await waitIdle();
+        else await page.waitForTimeout(250);
+      }
+    }
+    return true;
+  };
+
   const rl = readline.createInterface({ input: process.stdin });
 
   for await (const line of rl) {
@@ -196,6 +324,42 @@ const traceFile = path.join(tracesDir, `${label}.zip`);
         await page.goto(parts.slice(1).join(' '), { timeout: 20000 });
         await page.waitForLoadState('domcontentloaded');
         console.log(`  → ${page.url()}`);
+
+      } else if (cmd === 'mode') {
+        // Set navigation mode for subsequent `navmenu` commands.
+        // Usage: mode human   (click through menus)
+        //        mode quick   (short-circuit navmenu to goto #action=<id>)
+        const m = (parts[1] || '').toLowerCase();
+        if (m === 'human' || m === 'quick') {
+          navMode = m;
+          console.log(`  nav mode: ${navMode}`);
+        } else {
+          console.log(`  mode expects 'human' or 'quick' (got "${parts[1] || ''}")`);
+        }
+
+      } else if (cmd === 'navmenu') {
+        // Navigate by clicking menu items instead of a hash URL.
+        // Usage: navmenu App > Section > [Group >] Item [@<actionId>]
+        //   human mode → clicks each label in turn (shows the real breadcrumb)
+        //   quick  mode → jumps to #action=<id> if @<id> is given; else clicks through
+        let spec = rawRest.trim();
+        let actionId = null;
+        const m = spec.match(/\s*@(\d+)\s*$/);
+        if (m) { actionId = m[1]; spec = spec.slice(0, m.index).trim(); }
+        const labels = spec.split('>').map(s => s.trim()).filter(Boolean);
+        if (labels.length === 0) {
+          console.log('  navmenu: no menu path given (e.g. navmenu Inventory > Configuration > Products > Purchase Product Group)');
+        } else if (navMode === 'quick' && actionId) {
+          const origin = new URL(page.url()).origin;
+          await page.goto(`${origin}/web#action=${actionId}`, { timeout: 20000 });
+          const ms = await waitIdle(15000);
+          console.log(`  navmenu [quick] → #action=${actionId} (${ms}ms): ${labels.join(' > ')}`);
+        } else {
+          if (navMode === 'quick' && !actionId) {
+            console.log('  navmenu [quick] no @<actionId> supplied — clicking through instead');
+          }
+          await navMenuWalk(labels);
+        }
 
       } else if (cmd === 'click') {
         await page.click(rawRest, { timeout: 30000 }).catch(async (e) => {

@@ -1,0 +1,14 @@
+# navmenu — HUMAN mode (Odoo 14, dv_kc)
+# Demonstrates the real click sequence: apps menu → app → section dropdown →
+# group → menu item. The trace shows each breadcrumb the way a user sees it.
+#
+# Run:
+#   ./trace.sh navmenu-human 'http://localhost:8069/web/login?db=dv_kc' < flows/navmenu-human.txt
+
+login admin <ADMIN_PASSWORD>
+mode human
+navmenu Inventory > Configuration > Products > Purchase Product Group @706
+waitidle
+screenshot navmenu-human-final
+url
+done
