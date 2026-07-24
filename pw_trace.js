@@ -175,23 +175,58 @@ const traceFile = path.join(tracesDir, `${label}.zip`);
   let navMode = (process.env.NAV_MODE || 'human').toLowerCase();
   if (navMode !== 'human' && navMode !== 'quick') navMode = 'human';
 
+  // Red-pointer helpers (shared with the `mark` command's drawing style):
+  // inject a real box + caption that survives into the trace viewer, and
+  // clear them. Used by navmenu's human mode to explain each menu step.
+  const clearMarks = () => page.evaluate(() => {
+    document.querySelectorAll('[data-pw-mark]').forEach(e => e.remove());
+  }).catch(() => {});
+  const drawMarkRect = (rect, caption) => page.evaluate(({ rect, caption }) => {
+    if (!rect || !rect.width) return;
+    const box = document.createElement('div');
+    box.setAttribute('data-pw-mark', '1');
+    box.style.cssText = `position:fixed;left:${rect.x - 6}px;top:${rect.y - 6}px;` +
+      `width:${rect.width + 12}px;height:${rect.height + 12}px;border:3px solid #dc1e1e;` +
+      `border-radius:6px;z-index:2147483647;pointer-events:none;box-sizing:border-box;`;
+    document.body.appendChild(box);
+    if (caption) {
+      const label = document.createElement('div');
+      label.setAttribute('data-pw-mark', '1');
+      label.textContent = caption;
+      // caption below the box if there's no room above (e.g. top navbar)
+      const below = rect.y < 40;
+      label.style.cssText = `position:fixed;left:${rect.x}px;` +
+        `top:${below ? rect.y + rect.height + 6 : Math.max(rect.y - 34, 4)}px;` +
+        `background:#dc1e1e;color:#fff;font:bold 13px sans-serif;padding:3px 9px;` +
+        `border-radius:4px;z-index:2147483647;pointer-events:none;white-space:nowrap;`;
+      document.body.appendChild(label);
+    }
+  }, { rect, caption }).catch(() => {});
+
   // In-page resolver for one menu level. Matches on RENDERED visible text
   // (exact-then-contains, case-insensitive) so translated labels (e.g. Thai)
-  // work — the flow author writes whatever appears on screen. Odoo 14 markup:
+  // work — the flow author writes whatever appears on screen. It does NOT
+  // click: it TAGS the target with data-nav-target and returns its bounding
+  // box, so the caller can draw the red pointer first, then click. Odoo 14:
   //   app      → .o_menu_apps a.o_app
   //   section  → .o_menu_sections > li > a  (dropdown-toggle = opens; else leaf)
   //   dropdown → .dropdown-header (group, not clickable) + a.dropdown-item (leaf)
-  const navPick = (spec) => page.evaluate((spec) => {
+  const navLocate = (spec) => page.evaluate((spec) => {
     const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const w = norm(spec.label);
     const listText = els => els.map(e => (e.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const rectOf = el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
+    const tag = el => {
+      document.querySelectorAll('[data-nav-target]').forEach(e => e.removeAttribute('data-nav-target'));
+      el.setAttribute('data-nav-target', '1');
+    };
 
     if (spec.level === 'app') {
       const items = Array.from(document.querySelectorAll('.o_menu_apps a.o_app'));
       const el = items.find(e => norm(e.textContent) === w) || items.find(e => norm(e.textContent).includes(w));
       if (!el) return { ok: false, candidates: listText(items) };
-      el.click();
-      return { ok: true, text: el.textContent.trim(), leaf: true };
+      tag(el);
+      return { ok: true, text: el.textContent.trim(), kind: 'item', leaf: true, rect: rectOf(el) };
     }
 
     if (spec.level === 'section') {
@@ -201,9 +236,8 @@ const traceFile = path.join(tracesDir, `${label}.zip`);
                  || secs.find(li => { const a = getA(li); return a && norm(a.textContent).includes(w); });
       if (!match) return { ok: false, candidates: secs.map(li => { const a = getA(li); return a ? a.textContent.trim() : ''; }).filter(Boolean) };
       const a = getA(match);
-      const isToggle = a.classList.contains('dropdown-toggle');
-      a.click();
-      return { ok: true, text: a.textContent.trim(), leaf: !isToggle };
+      tag(a);
+      return { ok: true, text: a.textContent.trim(), kind: 'item', leaf: !a.classList.contains('dropdown-toggle'), rect: rectOf(a) };
     }
 
     // level === 'dropdown' — inside the currently open section dropdown
@@ -232,66 +266,100 @@ const traceFile = path.join(tracesDir, `${label}.zip`);
     // Resolution order: exact item → exact header → contains item → contains
     // header. Exact-header-before-contains-item stops "Delivery" (a group)
     // from wrongly matching the item "Delivery Packages".
-    const clickInfo = el => ({ ok: true, text: el.textContent.trim(), kind: 'item', leaf: !el.classList.contains('dropdown-toggle') });
+    const foundItem = el => { tag(el); return { ok: true, text: el.textContent.trim(), kind: 'item', leaf: !el.classList.contains('dropdown-toggle'), rect: rectOf(el) }; };
+    const foundHeader = el => { tag(el); return { ok: true, text: el.textContent.trim(), kind: 'header', rect: rectOf(el) }; };
     let el = items.find(e => norm(e.textContent) === w);
-    if (el) { el.click(); return clickInfo(el); }
+    if (el) return foundItem(el);
     let hd = headers.find(e => norm(e.textContent) === w);
-    if (hd) return { ok: true, text: hd.textContent.trim(), kind: 'header' };
+    if (hd) return foundHeader(hd);
     el = items.find(e => norm(e.textContent).includes(w));
-    if (el) { el.click(); return clickInfo(el); }
+    if (el) return foundItem(el);
     hd = headers.find(e => norm(e.textContent).includes(w));
-    if (hd) return { ok: true, text: hd.textContent.trim(), kind: 'header' };
+    if (hd) return foundHeader(hd);
 
     return { ok: false, candidates: nodes.map(n => (n.classList.contains('dropdown-header') ? '[group] ' : '') + n.textContent.trim()).filter(Boolean) };
   }, spec);
 
+  // Click whatever navLocate tagged, and clear the tag.
+  const navClickTagged = () => page.evaluate(() => {
+    const el = document.querySelector('[data-nav-target]');
+    if (!el) return false;
+    el.removeAttribute('data-nav-target');
+    el.click();
+    return true;
+  });
+
   // Walk a `>`-separated label path by clicking each menu level, with an
-  // implicit waitidle between navigating clicks. Returns true on success.
-  const navMenuWalk = async (labels) => {
+  // implicit waitidle between navigating clicks. When opts.mark is set (human
+  // mode), a red box + caption is drawn on each target before it is clicked,
+  // so the trace explains every step. Returns true on success.
+  const navMenuWalk = async (labels, opts = {}) => {
+    const mark = !!opts.mark;
     const showCandidates = list => (list || []).forEach(c => console.log(`      · ${c}`));
+    // draw the pointer, pause so it's captured in the trace, then (optionally) click
+    const point = async (rect, caption) => {
+      if (!mark) return;
+      await clearMarks();
+      await drawMarkRect(rect, caption);
+      await page.waitForTimeout(600); // hold the pointer so it's visible in the trace
+    };
+    const fail = async (msg, r) => {
+      console.log(`  navmenu NOT FOUND: ${msg}`);
+      if (r && r.nomenu) console.log('      (no open dropdown menu found)');
+      showCandidates(r && r.candidates);
+      if (mark) await clearMarks();
+      return false;
+    };
 
     // Level 0 — app: open the apps menu (for visual fidelity) then click it
     await page.evaluate(() => { const t = document.querySelector('.o_menu_apps a.full, .o_menu_apps .dropdown-toggle'); if (t) t.click(); }).catch(() => {});
     await page.waitForTimeout(250); // apps dropdown CSS animation (no network)
-    let r = await navPick({ level: 'app', label: labels[0] });
-    if (!r.ok) { console.log(`  navmenu NOT FOUND: "${labels[0]}" (app level)`); showCandidates(r.candidates); return false; }
+    let r = await navLocate({ level: 'app', label: labels[0] });
+    if (!r.ok) return fail(`"${labels[0]}" (app level)`, r);
+    await point(r.rect, `App: ${r.text}`);
+    await navClickTagged();
+    if (mark) await clearMarks(); // clicking the app navigates — drop the stale box
     console.log(`  navmenu → app "${r.text}"`);
     await waitIdle();
     if (labels.length === 1) return true;
 
     // Level 1 — section (top menu bar of the current app)
-    r = await navPick({ level: 'section', label: labels[1] });
-    if (!r.ok) { console.log(`  navmenu NOT FOUND: "${labels[1]}" (section level)`); showCandidates(r.candidates); return false; }
+    r = await navLocate({ level: 'section', label: labels[1] });
+    if (!r.ok) return fail(`"${labels[1]}" (section level)`, r);
+    await point(r.rect, `Menu: ${r.text}`);
+    await navClickTagged();
     if (r.leaf) {
+      if (mark) await clearMarks(); // navigated — drop the stale box
       console.log(`  navmenu → section "${r.text}" (leaf)`);
       await waitIdle();
       if (labels.length > 2) console.log(`  navmenu WARNING: "${r.text}" navigated but ${labels.length - 2} more label(s) remain`);
       return true;
     }
+    // dropdown toggle: keep the navbar mark up while the dropdown is open
     console.log(`  navmenu → opened section "${r.text}"`);
     await page.waitForTimeout(250); // dropdown CSS animation
 
     // Levels 2+ — inside the open dropdown (group headers + leaf items)
     let group = null;
     for (let i = 2; i < labels.length; i++) {
-      r = await navPick({ level: 'dropdown', label: labels[i], group });
-      if (!r.ok) {
-        console.log(`  navmenu NOT FOUND: "${labels[i]}" (under "${labels[i - 1]}")`);
-        if (r.nomenu) console.log('      (no open dropdown menu found)');
-        showCandidates(r.candidates);
-        return false;
-      }
+      r = await navLocate({ level: 'dropdown', label: labels[i], group });
+      if (!r.ok) return fail(`"${labels[i]}" (under "${labels[i - 1]}")`, r);
       const isLast = i === labels.length - 1;
       if (r.kind === 'header') {
+        // group header — explain it with the pointer but do NOT click
+        await point(r.rect, `Group: ${r.text}`);
         group = r.text;
         console.log(`  navmenu → group "${r.text}"${isLast ? '  (WARNING: group header, not a clickable item)' : ''}`);
       } else {
+        await point(r.rect, `${isLast ? 'Open' : 'Menu'}: ${r.text}`);
+        await navClickTagged();
         console.log(`  navmenu → item "${r.text}"${r.leaf ? '' : ' (submenu)'}`);
         group = null;
-        if (r.leaf) await waitIdle();
+        if (r.leaf) { if (mark) await clearMarks(); await waitIdle(); } // navigated — drop stale box
         else await page.waitForTimeout(250);
       }
     }
+    if (mark) await clearMarks();
     return true;
   };
 
@@ -358,7 +426,8 @@ const traceFile = path.join(tracesDir, `${label}.zip`);
           if (navMode === 'quick' && !actionId) {
             console.log('  navmenu [quick] no @<actionId> supplied — clicking through instead');
           }
-          await navMenuWalk(labels);
+          // Human mode always draws the red pointer at each step to explain it
+          await navMenuWalk(labels, { mark: navMode === 'human' });
         }
 
       } else if (cmd === 'click') {

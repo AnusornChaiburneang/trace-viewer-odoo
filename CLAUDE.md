@@ -197,6 +197,8 @@ Two ways to reach a screen:
 
 inserting an implicit `waitidle` between navigating clicks. On any label it can't find, it prints `NOT FOUND: <label>` and lists the visible items at that level (group headers marked `[group]`) so failures are debuggable.
 
+**Human mode always draws a red pointer.** Before each step it puts a red box + caption on the target (`App: Inventory`, `Menu: Configuration`, `Group: Products`, `Open: Purchase Product Group`) and holds it briefly so the trace explains *what* is being clicked and *where*. The pointer is cleared right after a navigating click, so the destination screen stays clean. (Uses the same drawing as the `mark` command, so it survives into the trace viewer's Snapshot tab.) Quick mode draws no pointer — it just jumps.
+
 **Mode switch** — choose per flow with the `mode` directive near the top (default is `human`):
 
 ```
