@@ -1,0 +1,28 @@
+Context: Odoo 17, db dv_std17_test, RMA "Return Products" wizard flow
+(rma-std-credit-note-and-po-confirm.txt).
+
+What failed: wrapped click/waitfor selectors in single quotes the same way
+fill/m2o/date need quoting when the selector has spaces, e.g.:
+  click 'tr:has-text("RMA Demo Product A") button[name="action_claim_refund_process_ept"]'
+This consistently produced:
+  TIMEOUT ... selector matched -1 element(s) but was not actionable
+The doc already says click/waitfor/fclick/bbox/find/evals take the WHOLE REST
+OF THE LINE unquoted — the outer quotes become literal characters in the
+selector, breaking it. I re-discovered this the hard way across ~6 debug runs
+before re-reading the doc line I'd already been given.
+
+Workaround: drop the outer quotes entirely for click/waitfor/fclick/bbox/find/
+evals; only keep quotes for fill/m2o/date when THEIR selector has a space.
+
+Suggested fix: have the tool detect a selector argument that starts AND ends
+with a matching quote character for click/waitfor/fclick/bbox/find/evals and
+print a WARNING (same style as the existing fill/m2o/date unquoted-selector
+warning) suggesting the quotes be removed, since silently accepting them and
+failing with a cryptic "-1 elements" hint cost significant debugging time.
+
+## STATUS 2026-08-21 — FIXED in pw_trace.js
+`warnIfWrapped()` now prints a warning when click/fclick/jclick/waitfor/bbox/
+find/evals/scroll receive a selector wrapped in 'single quotes'. Verified live:
+  > find 'input[name="login"]'
+    WARNING: "find" takes the whole rest of the line unquoted — the outer quotes
+    ... will make the selector match nothing. Remove them.

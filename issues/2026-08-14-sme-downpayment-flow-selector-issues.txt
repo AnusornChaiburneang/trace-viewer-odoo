@@ -1,0 +1,52 @@
+Flow: sme-downpayment-3rd-invoice-bug.txt (dv_sme)
+Date: 2026-08-14
+
+Issues hit while scripting a down-payment -> regular invoice -> regular invoice flow:
+
+1. `fill 'input[name="amount"]' 10` timed out every run against the "Create invoices"
+   wizard's percentage field, even right after clicking the "Down payment (percentage)"
+   radio. Selector likely wrong (probably nested inside a widget wrapper, not a bare
+   input[name="amount"]) - never found the correct one. Net effect: the wizard's amount
+   silently stayed at its default (0), so "Create Draft Invoice" correctly raised Odoo's
+   own "The value of the down payment amount must be positive." This is expected Odoo
+   behavior, not a target-app bug - just a flow-authoring dead end worth flagging so a
+   future run doesn't waste time treating it as the real repro target.
+
+2. `td[name="quantity"] input` (to manually edit an invoice line's quantity before
+   posting) also timed out on fill, and clicking the `td[name="quantity"]` cell itself
+   ("selector matched 1 element(s) but was not actionable") didn't enter edit mode
+   either. Never found the right way to get an account.move.line list row into edit
+   mode via this kit's `click`/`fill` primitives on dv_sme/O17. `addline`-style focus
+   helpers exist for One2many "add row" but nothing for "edit an existing row's cell".
+
+3. `click .o_breadcrumb a:first-child` / `click .o_breadcrumb a` to navigate back to
+   the parent Sale Order from a posted invoice was unreliable - sometimes "not
+   actionable" (timeout), sometimes clicked the wrong breadcrumb level (the top-level
+   list crumb, not the specific record). Ended up leaving the flow on the invoice's own
+   form instead of the SO, which cascaded into several unrelated "clickbtn NOT FOUND"
+   steps. A dedicated `breadcrumb <n>` (click the nth crumb) or `back` command that
+   uses the record's smart-button/router state rather than raw breadcrumb DOM would
+   avoid this class of flakiness.
+
+## STATUS 2026-08-21 — item 3 implemented; items 1 and 2 STILL OPEN
+Item 3 FIXED: `breadcrumb [n]` added — clicks a crumb by index via JS (default =
+the parent level, i.e. the last crumb LINK), which avoids the "not actionable" /
+wrong-level flakiness of clicking `.o_breadcrumb a` directly.
+Items 1 and 2 remain open. Both are selector-discovery dead ends rather than kit
+bugs: the "Create invoices" wizard percentage input, and getting an EXISTING
+account.move.line row into edit mode on Odoo 17 (`celltype` was written for v14).
+An O17-aware editable-row helper is still missing.
+
+## STATUS 2026-09-09 — items 1 and 2 implemented and verified
+
+`field amount 10` resolves the wizard's visible Odoo field wrapper and commits
+its inner input. `rowset invoice_line_ids #1 quantity 2` enters an existing
+Odoo 17 row's editor and verifies the value after change/blur. Rows may also be
+matched exactly, e.g. `rowset invoice_line_ids 'name=Service A' quantity 2`.
+Both helpers reject readonly/ambiguous targets and report failures in result JSON.
+
+Verified on dv_sme using field-rowset-confirm.txt: the down-payment wizard's
+amount displayed 10.00, and an unsaved invoice line's quantity displayed 2.00.
+The invoice form was initialized empty before adding the line through the UI;
+no invoice was saved or posted. This verifies the helper gaps, not the separate
+third-invoice business bug described in the original flow.

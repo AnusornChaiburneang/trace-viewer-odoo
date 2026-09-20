@@ -1,0 +1,31 @@
+Date: 2026-08-14
+Flow: payment-direct-debitcredit-confirm.txt
+DB: dv_ryt
+
+Issue: `click`/`jclick` on an editable-list boolean field's checkbox
+(`td[name="add_cost"] input[type="checkbox"]`) reports success but the
+checkbox stays unchecked (`.checked` still `false` after clicking). Also
+observed `TIMEOUT ... selector matched 1 element(s) but was not actionable`
+on subsequent attempts for the same cell, and separately for a numeric
+`debit`/`credit` cell right after picking a many2one autocomplete result in
+a newly added row.
+
+Likely cause: Odoo O2M editable-tree boolean cells may need the row to be
+put into edit mode first (single click elsewhere in the row) before the
+checkbox itself becomes clickable/toggleable, similar to other cell types.
+A raw click on the checkbox that isn't yet "active" seems to be swallowed.
+
+Workaround used: skipped verifying the toggle interactively; confirmed the
+field renders and persists correctly via direct SQL/state checks instead.
+
+Suggestion for kit: add a documented pattern (e.g. `boolcell <sel>`) that
+first clicks the row/cell to activate edit mode, waits, then clicks the
+checkbox — same spirit as `m2o`/`celltype` handling other widget quirks.
+
+## STATUS 2026-08-21 — IMPLEMENTED in pw_trace.js
+`boolcell '<td selector>' [on|off]` added, exactly as suggested: JS-clicks the
+cell to put the row into edit mode, waits, toggles the inner checkbox, then
+VERIFIES `.checked` actually flipped — falling back to forcing input+change
+events, and reporting "boolcell FAILED ... the widget is not accepting the
+toggle" if it still did not change. Also skips a no-op when the target state
+already matches.

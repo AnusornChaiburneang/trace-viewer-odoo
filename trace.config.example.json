@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Copy to trace.config.json and edit. The file is OPTIONAL and gitignored —",
+    "without it the kit runs standalone with the defaults shown below.",
+    "Every key can also be set per-run via an environment variable.",
+    "",
+    "outputDir      TRACE_OUT_DIR       where .zip/.log go. Relative = inside the kit.",
+    "defaultUrl     TRACE_DEFAULT_URL   used when no URL is given on the command line.",
+    "taskPattern    TRACE_TASK_PATTERN  regex for --task. Any ticket scheme, or leave",
+    "                                   the permissive default. A task is always optional.",
+    "taskInFilename                     prefix artifacts with the task number.",
+    "dashboardUrl   ODOO_DASHBOARD_URL  only used to resolve --session-id into a task.",
+    "                                   null (or absent) = never contacted."
+  ],
+
+  "outputDir": "traces",
+  "defaultUrl": "http://localhost:8069/web/login",
+  "taskPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+  "taskInFilename": false,
+  "dashboardUrl": null
+}

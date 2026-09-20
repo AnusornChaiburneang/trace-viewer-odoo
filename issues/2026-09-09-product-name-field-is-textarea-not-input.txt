@@ -1,0 +1,76 @@
+# 2026-09-09 — product.template's `name` field renders as <textarea>, not <input>
+
+## Context
+Odoo 17, dv_std17_test, product.template form (Inventory > Products > Products
+> New).
+
+## What failed
+    fill [name="name"] input UI Fresh Spec Product 20260909
+This reported success with no error, but the field was never actually filled.
+Confirmed via:
+    eval document.querySelector('[name="name"]').outerHTML
+    -> <div name="name" class="o_field_widget o_required_modifier o_field_text
+        text-break"><div style="height: 41px;">
+        <textarea class="o_input o_field_translate" ...></textarea>
+        <span class="o_field_translate btn btn-link">EN</span></div></div>
+
+The widget is `o_field_text` (translatable char rendered as a growing
+<textarea>), not a plain `<input>`. A selector ending in ` input` silently
+matches zero elements and the command still logs as if nothing was wrong
+(no "NOT FOUND"/timeout was surfaced in this run), so the empty required
+field only surfaces later as a `.o_field_invalid` on Save - by which point
+several unrelated steps downstream (a whole Purchase Order flow, in this
+case) have already cascaded off a form that was silently stuck on "New".
+
+## Fix
+    fill '[name="name"] textarea' UI Fresh Spec Product 20260909
+
+## Suggested fix for the kit
+- `fill <sel> <text>` matching zero elements should be a hard error/timeout
+  every time, the same way `pick`/`clickbtn` report "NOT FOUND" - a silent
+  no-op on a bad selector is what let this cascade through ~15 downstream
+  steps before surfacing.
+- More generally: any `o_field_text`/translatable Char field in Odoo 17 can
+  render as `textarea.o_field_translate` rather than `input` - worth a note
+  in the kit's field-selector guidance (product name, description fields,
+  etc. are common hits).
+
+## STATUS 2026-09-20 — FIXED, though the diagnosis needed a correction
+
+The suggested fix was "fill matching zero elements should be a hard error".
+`page.fill()` already throws on zero matches, so that was not the mechanism.
+What actually happened: the command was UNQUOTED —
+
+    fill [name="name"] input UI Fresh Spec Product 20260909
+
+so the tokenizer took the selector as `[name="name"]` and the value as
+`input UI Fresh Spec Product 20260909`. That broad selector matched a different
+fillable element (Odoo keeps several views in the DOM), the fill genuinely
+succeeded on the wrong node, and the product name stayed empty.
+
+Two changes, either of which alone would have stopped the cascade:
+
+1. `fill` now READS THE VALUE BACK after writing and fails if it does not match,
+   so a "filled:" line is evidence rather than a claim. It also reports when a
+   selector matched more than one element. Same principle the `field` helper
+   already used.
+2. A truncated unquoted selector is now a HARD ERROR for fill/date/m2o (it stays
+   a warning for `mark`, which only draws an annotation):
+     ERROR [fill]: selector "[name="name"]" looks unquoted and was truncated at
+     "input" — wrap selectors containing spaces in 'single quotes', e.g.
+     fill '[name="name"] input' <value> (refusing to write into whatever that
+     truncated selector matched)
+
+While doing this the truncation heuristic itself turned out to be badly
+miscalibrated: it counted any following token containing '.', '#' or '>' as a
+selector fragment, so it fired on 112 lines across flows/ that were perfectly
+correct — every `fill input#password <pw-with-a-dot>` (dot in a password) and every
+`<PLACEHOLDER>` value. It now requires a real bare tag, a leading . # or [, or
+brackets, which takes it to 11 flagged lines — all of them genuine truncations of
+the `fill .o_field_widget[name="x"] input <value>` form still live in flows/.
+That recalibration mattered: a warning that fires ~100 times wrongly is one
+people learn to scroll past, which is what the 2026-09-09 RMA note reported.
+
+The second suggestion — that o_field_text / translatable Char fields render as
+`textarea.o_field_translate` rather than `input` — is real and worth knowing, but
+the verification above now catches it generically without needing a per-widget list.

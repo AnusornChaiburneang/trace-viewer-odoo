@@ -1,0 +1,34 @@
+# Regression smoke test for pw_trace.js — run via ../run-tests.sh
+#
+# Deliberately runs against the LOGIN PAGE ONLY: no credentials, no database
+# reads, no writes, nothing client-specific. It works against whatever Odoo
+# happens to be on the port, and exercises the FAILURE paths, because those are
+# what silently rot when the dispatcher is edited.
+# __BASE__ and __DBQ__ (a ?db=... suffix, or empty) are substituted by the runner.
+
+# 1. wrapped-quote warning: click-family commands take the rest of the line RAW
+find 'input[name="login"]'
+
+# 2. the correct unquoted form still works
+find input[name="login"]
+
+# 3. scroll — hit, then miss (must report, not crash)
+scroll input[name="login"]
+scroll .no_such_element_at_all
+
+# 4. breadcrumb with no crumbs on the page — must report, not crash
+breadcrumb
+
+# 5. boolcell against a cell that does not exist — must report, not crash
+boolcell '.no_such_cell td' on
+
+# 6. record builds the Odoo-17 hash URL (bounces to login when unauthenticated)
+record res.partner 1
+
+# 7. an Odoo-18 style path URL renders blank on O17 — must warn, not stay silent
+goto __BASE__/odoo/inventory/products__DBQ__
+
+# 8. back to a real page, then clickrpc both ways
+goto __BASE__/web/login__DBQ__
+clickrpc NoSuchButtonHere
+clickrpc Log in

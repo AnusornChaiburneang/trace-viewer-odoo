@@ -1,0 +1,32 @@
+# 2026-08-20 — product-data-analyze-relabel (dv_ryt, Odoo 17)
+
+1) No `scroll` command
+   `scroll .o_notebook` → "Unknown command: scroll".
+   There is no way to scroll a long form so a lower group lands in the
+   screenshot. Workaround used: `click div[name="others"] input` on the last
+   field, which makes Playwright scroll it into view — but that FOCUSES/dirties
+   a field, which is wrong for a read-only verification flow.
+   Suggestion: add `scroll <sel>` (scrollIntoView, no click) and/or
+   `screenshot full` (full-page capture).
+
+2) Odoo 18-style path URLs silently produce an empty page on Odoo 17
+   `goto http://localhost:8069/odoo/inventory/products?db=dv_ryt` loaded fine
+   (no error) but rendered nothing, so the next two `click`s timed out with
+   "selector matched 0 elements" — misleading, looked like a selector problem.
+   Odoo 17 needs the hash form:
+     /web?db=dv_ryt#id=<id>&model=product.template&view_type=form&action=412
+   Suggestion: after `goto`, warn if the page has no `.o_action_manager`
+   content, or detect the server version and rewrite /odoo/* paths.
+
+## STATUS 2026-08-21 — both implemented in pw_trace.js
+1) `scroll <sel>` added — scrollIntoView({block:'center'}) with NO click and NO
+   focus, so it does not dirty a field in a read-only verification flow.
+   (Note: `screenshot` was already fullPage:true. Full-page capture alone did not
+   help here because Odoo forms scroll INSIDE .o_content, not the page body —
+   which is exactly why `scroll` was the right fix.)
+2) `goto` now warns when a page renders no action content. Verified live:
+   > goto http://localhost:8069/odoo/inventory/products
+     WARNING: the page rendered no action content (.o_action_manager is absent).
+     On Odoo 17 an /odoo/<path> style URL loads blank like this. Use the hash form
+     /web#id=<id>&model=<model>&view_type=form  — or the `record <model> <id>` command.
+   Auth pages (/web/login, /web/database) are excluded so they do not false-positive.

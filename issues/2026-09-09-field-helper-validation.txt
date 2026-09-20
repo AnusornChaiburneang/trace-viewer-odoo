@@ -1,0 +1,30 @@
+Context: Odoo 17, field-rowset-confirm, localhost:8069.
+The configured database changed from dv_std17_test to dv_sme during development;
+old credentials/session failed login verification. Pin the active DB and use its
+matching saved flow login. Do not infer authentication from the visible page.
+
+Flow authoring: `eval await odoo...doAction(...)` failed with Unexpected identifier.
+`eval` accepts an expression wrapped in a regular Function, not top-level await.
+Use `eval odoo...doAction(...)` (Playwright awaits the returned promise), or an
+async IIFE. Document this expression contract in the command guide.
+
+A test action that passed default_invoice_line_ids directly failed account.move
+onchange with Expected singleton: res.currency() before any row helper ran.
+Open the empty invoice form first, then add a line through the UI so its parent
+currency/journal defaults are initialized before editing the row.
+
+## STATUS 2026-09-20 — eval contract documented
+
+The `eval` expression contract is now in the command registry (commands.json),
+so it appears in the in-REPL help and the generated reference:
+
+  eval <js>  evaluate a JS EXPRESSION and print the result. It is wrapped in a
+  plain function, so top-level await is a syntax error — write
+  `eval odoo.__WOWL_DEBUG__.root.actionService.doAction(...)` (a returned promise
+  is awaited for you) or an async IIFE, not `eval await ...`
+
+The other two items are environment/authoring guidance rather than kit bugs and
+are left as recorded: pin the active DB and use its matching saved login rather
+than inferring authentication from the visible page; and open an empty
+account.move form before adding a line, so the parent currency/journal defaults
+exist before any row helper runs.

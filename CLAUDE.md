@@ -8,30 +8,12 @@ You are helping a developer use this tool to record and replay Odoo UI flows as 
 - navigate pages, click buttons, fill fields, take screenshots
 - save everything as a `.zip` trace viewable in the Playwright Trace Viewer
 
-## Your job: discover their environment first
+## Shared workflow
 
-Before writing any flow or running any command, ask the developer:
-
-1. **Odoo URL** — `http://localhost:8069` or a remote IP/hostname?
-2. **Database name** — which DB to test against?
-3. **Login credentials** — username + password for the test session
-4. **Odoo version** — 14, 16, 17, 18? (affects selectors and URL patterns)
-5. **What flow do they want to record?** — e.g. SO→Invoice, Purchase, Inventory, etc.
-
-If they don't know some answers, help them find out:
-
-```bash
-# Check running Odoo process
-ps aux | grep odoo-bin | grep -v grep
-
-# List available databases
-psql -U odoo -h localhost -c "\l" 2>/dev/null | grep -v template
-
-# Check Odoo version from source
-grep -r "^version" /path/to/odoo/odoo/release.py 2>/dev/null | head -3
-```
-
----
+Read [TOOLS.md](/home/server/odoo-17.0/TOOLS.md) first. It defines environment
+discovery, explicit context, run history, and flow storage for every assistant.
+The [generated command reference](COMMANDS.md) is shared with runtime `help`.
+The notes below cover browser discovery and version-specific troubleshooting.
 
 ## Environment probe — run BEFORE writing flows
 
@@ -39,7 +21,7 @@ Once you have the URL + DB + credentials, do a quick probe run to discover:
 
 ### 1. Verify login works
 ```bash
-./trace.sh PROBE http://ODOO_URL/web/login <<'EOF'
+./trace-local.sh PROBE http://ODOO_URL/web/login <<'EOF'
 login ADMIN_USER ADMIN_PASS
 url
 screenshot
@@ -75,23 +57,23 @@ WHERE res_model = 'purchase.order' ORDER BY id;
 
 Replace `->>'en_US'` with `::text` on Odoo 14 where `name` is a plain varchar.
 
-### 3. Discover button names on a form
+### 3. Press buttons by LABEL — never hunt for the name/id
 
-After opening a form (e.g. new SO), run:
-```
-buttons
-```
-This lists every visible button as `name="<internal>" | "<label>"` — the ground truth for
-which selector to click. Button names vary by module (`action_confirm` vs `action_sale_ok`
-vs numeric action IDs), so never guess: run `buttons` first.
-
-**Or skip internal names entirely** — click by the visible label:
+To press any button, click by the label you see:
 ```
 clickbtn Create Invoice
 ```
-`clickbtn` matches visible text (exact first, then contains, case-insensitive) and prints
-the internal name it resolved to, so you learn the selector for free. If it reports
-NOT FOUND, run `buttons` to see what's actually on screen.
+Do NOT write `button[name="action_confirm"]` / `button[name="319"]` or go looking for the
+action id — that is the single biggest time-waster. Names/ids vary by module and version
+(`action_confirm` vs `action_sale_ok` vs a numeric id); the visible label is stable.
+
+`clickbtn` matches the visible label (exact → contains), falls back to title/aria-label for
+icon buttons and to an internal name if you pass one, and prints the internal name it
+resolved (so you learn it for free). **On a miss it prints the visible clickable labels
+inline** — just retry with one of those; no name-hunting, no separate lookup. Labels differ
+across DBs (e.g. the list "New" button is "Create" on some customized instances) — the miss
+list shows you which. `buttons` still gives the full `name="<internal>" | "<label>"` table if
+you want it up front.
 
 ### 4. Find the "Add a line" / "Add a product" button text
 
@@ -143,11 +125,62 @@ When you click "Search More..." from a dropdown, the dialog opens **empty** — 
 You must re-type the search term inside the dialog:
 ```
 click .o_m2o_dropdown_option_search_more   # or "Search More..." link
-wait 2000
+waitidle
 fill .modal input.o_searchview_input SearchTerm
 press Enter
-wait 2000
+waitidle
 ```
+
+### Each run is a FRESH browser page — transient state does NOT carry over
+Only the login session (cookies) persists between runs. Open dialogs, dropdown
+state, and unsaved row-edits are **gone** in the next `trace.sh`/`trace-local.sh`
+call, even against the same URL/record. If a `Validate` click opens an
+"Immediate Transfer?" dialog, you MUST handle it (e.g. `clickbtn Apply`) in the
+**same command block** — a follow-up invocation reloads the page fresh and
+`clickbtn Apply` reports NOT FOUND. Rule: one logical action + all the dialogs it
+spawns must live in a single flow, never split across invocations.
+
+### Autocomplete: use `pick`, not `:has-text()` — and beware "Create and Edit…"
+`:has-text("Create \"X\"")` selectors on dropdown items are unreliable (report
+`matched -1 element(s)` / not actionable and silently do nothing). Instead:
+```
+fill '<input selector>' SearchText
+waitidle
+pick SearchText          # selects the matching option by text; skips Create/Create-and-Edit/Search More
+```
+`pick` works for OWL (`.o-autocomplete--dropdown-item`) and v14 jQuery-UI
+(`.ui-menu-item`).
+
+**You do NOT need a fixed wait before `pick`/`m2o`.** Odoo renders a
+"Loading..." placeholder that matches the same item selector before the
+`name_search` results replace it, so `waitfor .o-autocomplete--dropdown-item`
+can resolve while only that placeholder exists. `pick` and `m2o` now recognise
+the placeholder, never select it, and keep re-checking until the real options
+land (up to the action timeout) — so the old `wait 1000` workaround is
+unnecessary. If the results genuinely never arrive they say so explicitly
+instead of matching the placeholder.
+
+If you fall back to keyboard (`press ArrowDown` + `press
+Enter`), note Enter can land on **"Create and Edit…"**, which opens a nested
+"Create: <Field>" dialog — you must `clickbtn Save` (or the dialog's Save) on
+that inner dialog before the outer wizard's Confirm sees the value, or the
+record silently never gets created.
+
+### v14 editable-list cells: use `celltype` (CSS click lies)
+A readonly-styled `<td>` in a one2many list (e.g. the "Detailed Operations"
+popup) reports "not actionable" to `click`/`fclick` even though it IS clickable,
+and the first click only enters row-edit mode — it does NOT focus the inner
+input, so `type` goes into whatever was focused before (e.g. a read-only product
+description). Use:
+```
+celltype 'td[name="quantity"]' 5     # JS-clicks the cell, focuses its input, then types
+```
+
+### Column order is NOT stable across tables — discover with `cols`
+The "Detailed Operations" popup's move-line table has a different column set than
+the main Operations tab. Don't reuse a column index from another table — run
+`cols` (optionally `cols <table selector>`) to print each header with its index
+and field name for the table actually on screen.
 
 ---
 
@@ -161,14 +194,13 @@ Once you know the selectors, write a `.txt` file in `flows/`. Comments start wit
 # Env: Odoo X.X @ http://HOST:8069 / DB: my_db
 
 # Login
-fill input#login admin
-fill input#password admin
-press Enter
-wait 6000
+strict on
+login USER PASSWORD
+waitidle
 
 # Navigate
 goto http://HOST:8069/web#action=ACTION_ID
-wait 8000
+waitidle
 
 # ... your steps here ...
 
@@ -178,7 +210,7 @@ done
 
 Then run:
 ```bash
-./trace.sh MY-FLOW http://HOST:8069/web/login < flows/my-flow.txt
+./trace-local.sh MY-FLOW http://HOST:8069/web/login --db DATABASE --flow flows/my-flow.txt
 ```
 
 ---
@@ -234,12 +266,14 @@ The same line under `mode quick` jumps via `#action=706`. See `flows/navmenu-hum
 - For Odoo SPA list buttons, use `jclick` instead
 - Make sure the previous autocomplete/edit is committed (`press Escape` or `press Tab` first)
 
-**Autocomplete not selecting:**
+**Autocomplete not selecting:** use `pick`, which matches by text and waits out
+the "Loading..." placeholder. Do not click `.o-autocomplete--dropdown-item`
+directly — that selector also matches the placeholder, so a raw click can select
+"Loading...".
 ```
 fill input.o-autocomplete--input SearchTerm
-wait 2000
-click .o-autocomplete--dropdown-item
-wait 1500
+waitidle
+pick SearchTerm
 ```
 
 **After hash URL navigation, page looks empty:**
@@ -248,8 +282,41 @@ wait 1500
 **Flows are slow:**
 - Replace fixed `wait <ms>` with `waitidle` — it returns as soon as Odoo finishes
   its RPCs and loading overlays disappear (typically <1s locally vs 5-8s fixed waits)
-- Use `waitfor <sel>` when waiting for a specific element (e.g. `waitfor .o-autocomplete--dropdown-item` after typing in an autocomplete)
+- Use `waitfor <sel>` when waiting for a specific element. Note `waitfor .o-autocomplete--dropdown-item` resolves on the "Loading..." placeholder too, so follow it with `pick` (which waits for real options) rather than a raw `click`
 - Keep small fixed waits only for pure CSS animations that fire no network requests
+
+**A run hung / was killed and I can't see where:**
+- Every command is echoed as `> <command>` the moment it starts, and the console is
+  teed to `<tracedir>/<label>.log` **synchronously** — so a run killed by SIGTERM/timeout
+  still shows the last command it reached. Read that `.log` file.
+- `trace-local.sh` runs node line-buffered (`stdbuf -oL`) so output streams live.
+
+**A bad selector makes the flow look frozen:**
+- Actions fail fast at **8s** by default (not Playwright's silent 30s). Bad selectors print
+  `TIMEOUT on <cmd> <sel>` immediately with a "matched 0 elements" hint.
+- `timeout <ms>` changes the per-action budget; `strict on` aborts the whole flow on the
+  first error/timeout. Default mode continues but still exits 1 on any failed step.
+  Failed login and hard timeouts always abort. Read `<label>.result.json` for
+  per-step status, source line, duration, and reason. Env: `CMD_TIMEOUT`, `STRICT`.
+
+**Date / datetime fields (Odoo 17) eat a 30s timeout on click:**
+- Use `date <sel> <value>` — it fills WITHOUT clicking (the picker overlay isn't clickable),
+  fires `change`, closes the picker (Escape), and commits (blur). Never `click` a date input first.
+- Value format follows the user's lang. en_US: date `%d/%m/%Y`, datetime `%d/%m/%Y %H:%M:%S`
+  (e.g. `date '.o_field_widget[name="commitment_date"] input' 01/06/2026 18:00:00`). Stored UTC.
+
+**Selectors with spaces silently break `fill`/`date`/`mark`/`m2o`:**
+- These commands take `<selector> <value>`, so an unquoted selector with a space gets split and
+  the tail folds into the value. Wrap such selectors in `'single quotes'`. The tool now prints a
+  `WARNING: selector "…" looks unquoted and may be truncated` when it detects this.
+- Selector-only commands (`click`/`fclick`/`waitfor`/`bbox`/`find`/`evals`) take the whole rest of
+  the line, so spaces are fine there without quoting.
+
+**navmenu works on Odoo 14/16/17 unchanged** — the app/section/dropdown selectors are unions across
+versions (v17 apps `.o_grid_apps_menu__button` opener + `a.o-app-menu-item`; sections
+`.o_menu_sections > .o-dropdown > button.dropdown-toggle`; open menu `.o-dropdown--menu.d-block`).
+`mode human` still draws the red pointer at each step. It waits for the app grid / dropdown to
+actually render (not a fixed sleep), so it's not flaky across versions.
 
 ---
 
@@ -259,3 +326,29 @@ After setup, produce:
 1. A working `flows/<name>.txt` file for the developer's target flow
 2. A short summary of what selectors/IDs you discovered for their DB
 3. The command to run it and pull the trace zip
+
+## Explicit run context and assertions
+
+Use `trace-local.sh <name> [url] --task T26-12345 --session-id <current-session> --db <db>`.
+Both launchers also accept `ODOO_TASK`, `ODOO_SESSION_ID`, and `ODOO_DB`; flags win.
+Never infer the task/session from the newest Claude log or dashboard session. If
+only a session is provided, task lookup is restricted to that exact ID. Missing
+context stays unassigned. A `--db` conflicting with URL `?db=` is an error.
+
+Use `expect visible|hidden|text|value <selector> [expected]`, `expect state <label>`,
+and `expect dialog <title>` to verify outcomes. Quote selectors containing spaces.
+These retry within the action timeout and fail the run if the expected UI state
+is absent. Trace creation alone is not proof of success: inspect the exit code
+and `<label>.result.json`. See README for the result schema and context metadata.
+
+## Field names and editable rows (Odoo 17)
+
+Prefer `field amount 10` for scalar form/wizard fields and
+`rowset invoice_line_ids 'name=Service A' quantity 2` for existing rows. A row may
+also be selected by `#1` (first visible data row). Field names are resolved in the
+active form/topmost dialog. Exact row matching must be unique. The helper waits
+for the row editor, commits widget changes, and verifies the displayed result.
+It does not press Save. Read README for supported widget types and limitations.
+
+`eval` takes a JavaScript expression and awaits its returned promise. Do not use
+bare top-level `await`; return the promise or wrap code in an async IIFE.

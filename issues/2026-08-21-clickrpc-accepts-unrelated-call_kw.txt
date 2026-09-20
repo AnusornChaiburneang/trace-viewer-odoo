@@ -1,0 +1,96 @@
+# 2026-08-21 — clickrpc: any call_kw counts as proof, incl. unrelated background RPCs
+
+## Context
+Odoo 17, dv_std17_test. Re-verifying the new `clickrpc` command (added today in
+response to 2026-08-21-inert-form-header-buttons-and-group-navmenu.txt) on
+flows/rma-receive-back-valuation-confirm.txt.
+
+## The good part — it works
+On the dead purchase.claim.ept header button it now fails loudly instead of
+reporting a phantom success:
+
+    > clickrpc Validate
+      ERROR [clickrpc]: clicked "Validate" (name="process_claim") but NO
+      /web/dataset/call_button or call_kw request fired within 8000ms — the
+      button did nothing. It still carries raw invisible= in the DOM ...
+
+That is exactly the intended behaviour, and the raw-`invisible=` hint in the
+message is what identifies the cause. Keep it.
+
+## Issue — the success side is too permissive
+`clickrpc` treats ANY call_button **or call_kw** as proof, so it passes on RPCs
+that are not the button's action:
+
+1. Unrelated background noise. While still on the RMA form (the dead button):
+       > clickrpc Validate
+         clickrpc: "Validate" (name="process_claim")
+           → /web/dataset/call_kw/access.management/get_remove_options OK
+   Reported OK, but nothing ran — that RPC is access_management's own JS. Same
+   dead button that errored correctly one step earlier; the only difference was
+   a background request happening to land inside the window.
+
+2. The save, not the action. On the picking:
+       > clickrpc Validate
+         clickrpc: "Validate" (name="button_validate")
+           → /web/dataset/call_kw/stock.picking/web_save OK
+   `web_save` is the pre-button save. Here button_validate did run, but a button
+   that saves and then dies would still report OK.
+
+## Suggested fix
+Only count an RPC that plausibly belongs to the click:
+- `/web/dataset/call_button` — always accept.
+- `call_kw/<model>/<method>` — accept only when `<method>` equals the resolved
+  button name (e.g. call_kw/stock.picking/button_validate), or when `<model>`
+  is the form's model AND the method is not one of the framework's own
+  (`web_save`, `web_read`, `onchange`, `get_views`, `web_search_read`, ...).
+- Ignore requests to models other than the record's (access.management,
+  ks_* helpers, mail, bus).
+Printing the matched request path, as it already does, is what made this
+diagnosable — keep that.
+
+## STATUS 2026-08-21 — permissiveness FIXED as suggested
+
+`clickrpc` no longer resolves on the first RPC it sees. It now keeps watching
+until a request that plausibly belongs to THIS button arrives (`rpcQualifies`
+in pw_trace.js), on the note's own rules:
+
+  * `/web/dataset/call_button`                  -> always accept
+  * `call_kw/<model>/<method>`, method == the resolved button name -> accept
+  * method is a framework method (web_save, web_read, onchange, get_views,
+    has_group, ...)                             -> reject, keep waiting
+  * model is another module's/infra (access.management, ks_*, mail.*, bus.*,
+    ir.*, res.users, res.config, res.lang)      -> reject, keep waiting
+
+Deliberately conservative: a false failure is loud and cheap to check, a false
+success is the exact bug clickrpc exists to catch. Because it now KEEPS WAITING
+instead of resolving early, case 2 still passes correctly — web_save is skipped
+and the subsequent call_button is what matches.
+
+Unit-tested against both reported false positives plus 7 more cases, all pass:
+  call_kw/access.management/get_remove_options  -> reject  (case 1)
+  call_kw/stock.picking/web_save                -> reject  (case 2)
+  call_button                                   -> accept
+  call_kw/stock.picking/button_validate         -> accept
+  call_kw/purchase.claim.ept/process_claim      -> accept
+The matched path is still printed on success, and on failure every observed
+/web/ path is listed (and a web_save is called out explicitly), as requested.
+
+## DISAGREEMENT 2026-08-21 — the raw `invisible=` hint has been REMOVED, not kept
+
+This note says of the failure message: "the raw-`invisible=` hint in the message
+is what identifies the cause. Keep it." It has been removed instead, because the
+premise is false. Verified against Odoo 17 source:
+
+  * view_compiler.js `getModifier()` == `el.getAttribute(name)` — reads, never removes
+  * `compileButton()` forwards all remaining attributes in `attrs`
+  * view_button.xml renders `t-att="props.attrs"` onto the DOM element
+  * view_button.js (~L54-57) itself reads `props.attrs.invisible` / `.readonly`
+
+So EVERY healthy Odoo 17 button whose arch carries `invisible="..."` renders with
+that attribute still present. It does not indicate a re-rendered arch, a dead
+handler, or anything else — keeping the hint would have mislabelled a large share
+of perfectly normal header buttons as broken.
+
+The correct signal is the one this command already provides: did the button's own
+method reach the server? Full detail in
+2026-08-21-inert-form-header-buttons-and-group-navmenu.txt (UPDATE sections).

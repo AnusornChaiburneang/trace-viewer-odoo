@@ -1,0 +1,53 @@
+# 2026-09-09 — bare `cli.py odoo restart`/`start` can launch the WRONG Odoo install
+
+## Context
+This box hosts multiple unrelated Odoo installs: /home/server/odoo-17.0 (this
+project, v17, our modules) and /home/server/odoo (a separate legacy Odoo 14
+stack for an unrelated client, "KACEE" - own odoo.conf, own addons_path, its
+own db_name e.g. dv_kc).
+
+## What happened
+`cli.py odoo status` reported `db=dv_kc`. Believing that meant
+/home/server/odoo-17.0/odoo.conf had drifted to dv_kc, I edited that file
+back to dv_std17_test and ran a bare `cli.py odoo restart`. Verified the
+resulting pid with `ps -p <pid> -o cmd`:
+
+    /home/server/odoo/odoo-bin --config=/home/server/odoo/odoo.conf
+
+Completely different install, unaffected by my edit (which was to a file
+that process never reads). The bare command relaunched whatever the
+dashboard already considered "the" tracked process - in this case the
+unrelated Odoo 14 KACEE stack, still on its own dv_kc.
+
+## Fix
+`cli.py odoo start --version 17` (or `restart --version 17`) launches
+/home/server/odoo-17.0/odoo-bin -c /home/server/odoo-17.0/odoo.conf
+specifically - confirmed via `ps -p <pid> -o cmd`. The docstring in
+cli.py already documents `--version 17` / `--version 19`; a bare
+`start`/`restart` with no flag is NOT safe to assume targets this
+project - always pass `--version 17` when working under odoo-17.0, and
+always verify the resulting pid's cmdline before trusting `cli.py odoo
+status`'s report.
+
+## Suggested fix for the dashboard/CLAUDE.md
+- Make `--version 17` (or a project-path flag) required, or at least have
+  the docstring's `[--version 17]` example not read as optional convenience
+  - it's the difference between testing your own project and silently
+    bouncing someone else's unrelated running server.
+- `cli.py odoo status` reporting a db name is not proof of which
+  install/config is running it - it should also print the resolved
+  odoo-bin path / config path so a mismatch is visible without shelling
+  out to `ps`.
+
+## STATUS 2026-09-20 — NOT a trace-kit issue; no change made here
+
+Recorded deliberately without a code change: the fix belongs to the dev-dashboard
+(`cli.py`) and/or the project CLAUDE.md, not pw_trace.js. Both asks stand and are
+worth carrying over there:
+  * make `--version 17` explicit/required rather than looking like optional
+    convenience, since a bare restart can bounce an unrelated client's server;
+  * have `cli.py odoo status` print the resolved odoo-bin and config paths — a db
+    name alone is not proof of which install is running.
+
+Related but distinct from the existing memory note about `cli.py odoo
+restart/stop` signalling a stale pid; this is the "right pid, wrong install" case.

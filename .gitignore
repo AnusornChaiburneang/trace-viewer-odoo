@@ -7,3 +7,11 @@ config.json
 .env
 # saved login sessions — contain auth cookies, never commit
 .sessions/
+__pycache__/
+
+# Runtime observer key, private configuration backups, and server-side captures
+.runtime/
+trace.config.json
+
+# recorded flows — contain real databases and credentials, keep local
+flows/

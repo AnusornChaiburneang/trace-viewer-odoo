@@ -1,0 +1,85 @@
+# 2026-09-09 — three gotchas hit building a from-scratch RMA UI flow
+
+## Context
+Odoo 17, dv_std17_test. Building flows/rma-fifo-spec-fresh-create-ui-part{1,2,3}
+from scratch (product -> 2 POs/receipts -> RMA claim -> approve -> validate
+return -> Valuation report), no shell-scripted fixtures, every business
+action a real click. Took ~10 failed iterations to get right; logging the
+three real gotchas so the next from-scratch build doesn't repeat them.
+
+## 1. `click <sel>` does NOT want quotes; `fill`/`m2o`/`date` DO
+Used `click '[name="email_from"] input'` (quoted, copying the `fill` habit)
+and got:
+    WARNING: "click" takes the whole rest of the line unquoted — the outer
+    quotes ... are literal characters here and will make the selector match
+    nothing. Remove them (quotes are only needed for fill/m2o/date).
+    TIMEOUT ... selector matched -1 element(s) but was not actionable
+The tool DOES self-report this clearly - the miss was not reading the
+WARNING line as fatal (it looks like an advisory next to a TIMEOUT, but the
+TIMEOUT *is* the WARNING's direct consequence). Whenever a `click` on a
+selector with spaces times out with "-1 elements", check for stray quotes
+first before assuming the element doesn't exist.
+Suggested fix: promote this WARNING to appear directly before/inline with
+the TIMEOUT it causes (or make quote-wrapping a hard error for `click`),
+so the causal link is unmissable.
+
+## 2. Reusing a vendor across two receipts lets Odoo silently recall the
+   previous price
+Built receipt #1 (product X, vendor V, price 1000), then receipt #2 with
+the SAME vendor V and the SAME product X, typed price 2000 into the line -
+the fill logged "filled: ... = 2000" (value WAS 2000 at that instant) but
+the line saved at 1000 anyway. Root cause: once vendor+product is
+confirmed together, Odoo updates/creates a supplierinfo (vendor price)
+record; adding the same pair to a second PO recalls that price via
+onchange, and depending on timing this onchange can resolve AFTER a manual
+price edit and silently overwrite it back.
+Fix used: give the second PO a DIFFERENT vendor (quick-created via the
+`.o_m2o_dropdown_option_create` dropdown option) that has no purchase
+history for the product, so there's nothing to recall from.
+Takeaway for future fixture-building: never assume a `fill` on a price/qty
+cell "sticks" just because the log shows the right value at fill time -
+verify the PERSISTED value via a DB read (or an eval read right before
+Save) whenever the same vendor+product pair repeats across multiple
+records in one flow.
+
+## 3. Validating an outgoing transfer with no prior "Check Availability"
+   fails, even when stock is on hand
+Clicking Validate on a fresh return-to-vendor picking (state=confirmed,
+never reserved) produced a real call_button RPC but no state change, and a
+modal:
+    Invalid Operation
+    You cannot validate a transfer if no quantities are reserved, or if
+    only non-reserved moves are picked. To force the transfer, encode
+    quantities.
+even though the product had 2 units on hand (more than enough to reserve).
+Fix: click "Check Availability" (action_assign) BEFORE Validate on any
+outgoing/internal picking built via the UI that hasn't gone through
+action_confirm's automatic reservation. Receipts (incoming from a location
+with no stock concept, e.g. Vendors) don't hit this - it only bit the
+return-to-vendor leg here.
+
+## STATUS 2026-09-20 — item 1 FIXED; items 2 and 3 are flow guidance, no code change
+
+Item 1 (the WARNING reading as advisory next to the TIMEOUT it caused) is fixed
+by removing the ambiguity entirely: a quoted selector on the click family is now
+a HARD ERROR, not a warning, because those quotes become literal characters in
+the CSS and can never match — there is no case where it is merely advice.
+
+    ERROR [click]: "click" takes the whole rest of the line unquoted, so the
+    outer quotes around '.modal h4' are literal characters in the selector and
+    can never match. Remove them — quotes are only needed for fill/date/m2o/mark,
+    whose selector is one token.
+
+The flow stops there instead of continuing into a TIMEOUT that looks like a
+separate problem. 7 lines in flows/ trip this; all 7 are genuinely broken and
+could never have worked.
+
+Items 2 and 3 are real Odoo behaviour rather than kit bugs, and are worth keeping
+as flow-authoring rules:
+  * Reusing the same vendor+product across two POs lets supplierinfo recall the
+    earlier price over a manual edit. Note the related fix in item 1's spirit:
+    `fill` now verifies the value it just wrote, so a value that never lands is
+    caught immediately — but a value that lands and is LATER overwritten by an
+    onchange still needs a read-back before Save, as this note says.
+  * Outgoing/internal pickings built through the UI need "Check Availability"
+    (action_assign) before Validate.

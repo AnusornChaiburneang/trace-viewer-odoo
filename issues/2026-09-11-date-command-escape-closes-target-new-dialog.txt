@@ -1,0 +1,43 @@
+Flow: probe-settings-and-onchange.txt (dv_std17_test)
+Date: 2026-09-11
+
+`date <sel> <value>` unconditionally sends `page.keyboard.press('Escape')` after
+filling the value, to close the native picker overlay (pw_trace.js ~line 792).
+That's correct when the picker was actually opened by a real click first - but
+`date` never clicks the field, it just `page.fill()`s it directly, so no picker
+is ever open in the first place. When the date field lives inside a `target:
+'new'` act_window dialog (e.g. bs.unrealized.currency.wizard's form), that
+"closing" Escape has nothing to close, bubbles up, and is caught by Odoo's
+Dialog component instead - which closes the WHOLE modal. Net effect: `date
+'.o_field_widget[name="date"] input' 01/01/2020` silently closes the dialog
+instead of changing the date; every following step in the flow then runs
+against whatever's behind it (e.g. the Accounting Dashboard), with no error
+from the `date` command itself.
+
+Same root cause already noted in `pick`'s own comment (see
+issues/2026-08-06-m2o-blind-click-and-escape-closes-modal.txt) for m2o/pick -
+`date` has the identical trap but no equivalent fix/comment.
+
+Workaround used: skip `date` entirely for fields inside a target='new' dialog;
+instead `fill` the input, then `eval` a manual `dispatchEvent(new
+Event('change', {bubbles:true}))` on it, then click a neutral non-interactive
+element in the same dialog (e.g. its title) to blur - never press Escape here.
+
+Possible fix: only send Escape if a picker overlay is actually present, e.g.
+guard on `document.querySelector('.o_datetime_picker, .bootstrap-datetimepicker-widget')`
+before pressing it; or blur via `el.blur()`/click-elsewhere and drop the Escape
+entirely, matching how `m2o`/`pick` already avoid it.
+
+## STATUS 2026-09-20 — FIXED in pw_trace.js
+`date` now checks for an actually-open picker before sending Escape:
+
+    const pickerOpen = await page.evaluate(() => !!document.querySelector(
+      '.o_datetime_picker, .o_date_picker, .bootstrap-datetimepicker-widget, .datepicker'));
+    if (pickerOpen) await page.keyboard.press('Escape').catch(() => {});
+
+Since `date` never clicks the field, no picker is normally open, so the Escape
+that was closing the whole target='new' modal is simply not sent any more. The
+blur that commits the value was already there and is unchanged. When a picker IS
+open it is still dismissed, and the log line says so: `date: <sel> = "<v>"
+(closed open picker)`. The workaround in this note (fill + manual change event +
+click a neutral element) is no longer needed.

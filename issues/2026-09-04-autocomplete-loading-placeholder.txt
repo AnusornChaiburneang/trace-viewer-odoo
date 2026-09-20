@@ -1,0 +1,48 @@
+Flow: so-store-product-discount (dv_ryt, localhost:8069)
+DB: dv_ryt
+
+Issue: `waitfor .o-autocomplete--dropdown-item` resolves as soon as the
+autocomplete dropdown DOM node exists, but Odoo first renders a single
+"Loading..." placeholder item matching that same selector before the real
+RPC results replace it. A `click .o-autocomplete--dropdown-item` (or `pick`)
+issued immediately after `waitfor` can grab/inspect the placeholder instead
+of a real option — in one run `pick` literally reported two "Loading..."
+options and failed to match the search text.
+
+Workaround used: add `wait 1000` between `waitfor .o-autocomplete--dropdown-item`
+and `pick <text>` so real results have landed.
+
+Suggested kit improvement: `pick`/`click` for `.o-autocomplete--dropdown-item`
+could retry for a few hundred ms if the only visible item(s) are literally
+"Loading..." rather than failing/matching immediately.
+
+## STATUS 2026-09-09 — FIXED in pw_trace.js (the `wait 1000` workaround is no longer needed)
+
+Fixed in the shared matcher `pickFromDropdown`, so it applies to BOTH `pick` and
+`m2o`:
+
+  * A "Loading..." placeholder is now recognised and is NEVER selectable —
+    matched case-insensitively, also covering "Loading…" (unicode ellipsis) and
+    "Searching...". Previously it was an ordinary candidate, which is why `pick`
+    reported two "Loading..." options and failed to match.
+  * When placeholders (or nothing) are all that is present, the matcher reports
+    {loading:true} and the new `pickWhenSettled()` helper re-checks every 120ms
+    until the real name_search results land, up to the action timeout. This is
+    exactly the `wait 1000` the flow was adding by hand — drop it.
+  * If the results genuinely never arrive it now says so explicitly, and
+    distinguishes "still showed only a loading placeholder" from "still had no
+    visible items", instead of silently matching the placeholder.
+
+Note `waitfor .o-autocomplete--dropdown-item` still resolves on the placeholder
+— that command does what it says. The fix is that `pick`/`m2o` no longer trust
+it. Do not `click .o-autocomplete--dropdown-item` directly; that selector also
+matches the placeholder.
+
+Covered by a new unit test, `tests/unit_dropdown.js` (10 cases, run by
+./run-tests.sh). It extracts pickFromDropdown FROM pw_trace.js rather than
+copying it, so the test cannot drift from the implementation. Cases include the
+exact reported failure (two "Loading..." items -> reports loading, clicks
+nothing) and placeholder-alongside-real-results -> picks the real one.
+
+Docs updated: trace-kit CLAUDE.md (the pick section, the "autocomplete not
+selecting" recipe, and the waitfor tip) and the README `pick` row.

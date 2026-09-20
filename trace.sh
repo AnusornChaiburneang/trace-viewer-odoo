@@ -14,24 +14,15 @@
 
 set -euo pipefail
 
-NAME="${1:-}"
-TARGET_URL="${2:-http://localhost:8069/web/login}"
-
-if [[ -z "$NAME" ]]; then
-  echo "ERROR: name required"
-  echo "Usage: $0 <name> [target_url]"
-  exit 1
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Use local node_modules if present (preferred), else fall back to global
 if [[ ! -d "$SCRIPT_DIR/node_modules" ]]; then
-  export NODE_PATH="$(npm root -g 2>/dev/null || true)"
+  export NODE_PATH="${NODE_PATH:-$(npm root -g 2>/dev/null || true)}"
 fi
 # Playwright looks for browsers in ~/.cache/ms-playwright by default;
 # override only if a custom path is set in the environment
 : "${PLAYWRIGHT_BROWSERS_PATH:=${HOME}/.cache/ms-playwright}"
 export PLAYWRIGHT_BROWSERS_PATH
 
-exec node "$SCRIPT_DIR/pw_trace.js" "$NAME" "$TARGET_URL"
+exec node "$SCRIPT_DIR/pw_trace.js" "$@"

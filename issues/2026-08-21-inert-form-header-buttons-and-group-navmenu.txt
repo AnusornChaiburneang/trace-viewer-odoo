@@ -1,0 +1,118 @@
+# 2026-08-21 — inert form header buttons (ks_list_view_manager) + navmenu group headers
+
+## Context
+Odoo 17, dv_std17_test, purchase RMA flow (purchase.claim.ept form + stock.picking
+form). Flow: flows/rma-receive-back-valuation-confirm.txt
+
+## Issue 1 — header buttons that click but never fire an RPC
+On the purchase.claim.ept form, the header button "Validate" (name=process_claim)
+could not be triggered by ANY method:
+
+    > clickbtn Validate
+      clickbtn: "Validate" (name="process_claim")     <- reports success
+    > click button[name="process_claim"]
+      clicked: button[name="process_claim"]           <- reports success
+    > eval document.querySelector('button[name="process_claim"]').click()
+      eval: "js clicked"                              <- reports success
+
+Server saw ZERO /web/dataset/call_button requests in all three cases, and the
+record state never changed. The button is not disabled or hidden:
+
+    {"disabled":false,"pe":"auto","vis":"visible","display":"block",
+     "cls":"btn btn-primary","rect":{...w:76,h:33}}
+
+The tell is in the rendered DOM — the raw modifier attribute survived compilation:
+
+    <button invisible="state != 'process'" class="btn btn-primary"
+            name="process_claim" type="object"><span>Validate</span></button>
+
+Odoo 17 normally compiles `invisible=` away. Its presence means the arch was
+re-rendered by a third-party view manager (this DB has ks_list_view_manager +
+access_management installed, and the page issues
+/ks_lvm_control/ks_generate_arch_view) WITHOUT wiring the OWL click handlers.
+So the button is a dumb DOM element. Core stock.picking buttons
+(button_validate) on the same instance work fine — it is form-specific.
+
+Workaround: drive that one step server-side via odoo shell and let the trace
+cover the resulting records. Everything after it was real UI.
+
+Suggested fix for the kit:
+- `clickbtn` / `click` should optionally VERIFY a button actually did something:
+  e.g. a `clickrpc <sel>` command that clicks and then fails if no
+  /web/dataset/call_button request was observed within N ms. Right now a
+  "clicked:" line is not evidence the action ran, which cost most of a session.
+- Worth printing a warning when a rendered button still carries a raw
+  `invisible=`/`readonly=`/`column_invisible=` attribute — a reliable marker
+  that some module re-rendered the arch and the handlers may be dead.
+
+## Issue 2 — navmenu walks into a group header
+    > navmenu Inventory > Operations > Transfers
+      navmenu → group "Transfers"  (WARNING: group header, not a clickable item)
+The warning is good, but the flow then continued against the wrong page and every
+later selector timed out. Under Inventory > Operations, "Transfers" is a section
+label; the clickable items are Receipts / Deliveries / Internal / etc. A picking
+with a custom operation type (WH/RT "Returns") has no menu item at all.
+
+Workaround: `goto http://localhost:8069/web#id=<id>&model=stock.picking&view_type=form`
+
+Suggested fix:
+- Make `navmenu` FAIL (not warn) when the final segment resolves to a group
+  header — continuing is never what the flow wanted.
+- Add a `record <model> <id>` command that builds the O17 URL, so flows stop
+  hand-writing `/web#id=...&model=...&view_type=form`.
+
+## UPDATE 2026-08-21 — CORRECTION: the `invisible=` reasoning above is WRONG
+
+The claim in Issue 1 that "Odoo 17 normally compiles `invisible=` away, so its
+presence means the arch was re-rendered" is **incorrect**. Verified directly
+against Odoo 17 source (/home/server/odoo-17.0/addons/web/static/src/views/):
+
+  * view_compiler.js `getModifier()` is literally `el.getAttribute(name)` — it
+    READS the modifier and never removes it.
+  * `compileButton()` puts every remaining attribute into `attrs`.
+  * view_button.xml renders `t-att="props.attrs"`, spreading them onto the DOM.
+  * view_button.js (~L54-57) explicitly READS `props.attrs.invisible`,
+    `.column_invisible`, `.readonly`, `.required` — Odoo expects them there.
+
+=> A healthy Odoo 17 button whose arch has `invisible="..."` ALWAYS renders with
+   that attribute still on the DOM element. It is not a fault signal and carries
+   no diagnostic meaning. Do not use it to detect a dead button.
+
+Confirming evidence from this very form: the rendered DOM showed `oe_highlight`
+rewritten to `btn btn-primary` and `string="Validate"` turned into
+`<span>Validate</span>` — both are the compiler's own output, i.e. the button
+WAS compiled normally.
+
+A kit warning built on this heuristic was implemented and then removed again for
+this reason (it would have false-positived on most normal header buttons).
+
+## UPDATE 2026-08-21 — both suspected modules are CLEARED by evidence
+
+  * ks_list_view_manager: its `/ks_lvm_control/ks_generate_arch_view` controller
+    only calls `get_views([(id,"list"), (id,"search")])` — it never touches form
+    views. (controllers/lvm_controller.py ~L106)
+  * simplify_access_management: `store_model_nodes` has ZERO rows for model
+    `purchase.claim.ept` or `attribute_name='process_claim'` on dv_std17_test, so
+    it has not catalogued — let alone hidden — that button.
+  * The view arch itself is clean, textbook Odoo 17, and lives in our own module
+    (bs_rma_ept_purchase.purchase_crm_claims_ept_form_view, ir.ui.view id 5625).
+
+=> Root cause of the dead button is UNDETERMINED. The workaround (drive the
+   Validate step server-side via odoo shell) still stands, and core
+   stock.picking buttons still work on the same instance, so it remains
+   form-specific.
+
+## UPDATE 2026-08-21 — kit side: implemented and verified
+
+  * `clickrpc <label>` added — fails unless the button's method actually reaches
+    the server. Confirmed live: it caught this exact button
+    ("clicked Validate ... but NO call_button ... fired").
+  * `clickrpc` now also LISTS every /web/ request seen during the click window,
+    and ignores web_save/web_read/onchange as success signals. This is the next
+    diagnostic step for this bug: re-run `clickrpc Validate` and read that list.
+      - shows `web_save`  -> the record is failing to save, which blocks the method
+      - shows nothing     -> the click handler is genuinely not attached; look for
+                             a patch() on ViewButton / FormController in an
+                             installed third-party module
+  * navmenu now FAILS (not warns) when the last path segment is a group header.
+  * `record <model> <id>` added, replacing hand-written /web#id=... URLs.

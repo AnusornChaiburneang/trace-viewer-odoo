@@ -1,0 +1,57 @@
+Context: Odoo 17, db dv_std17_test, RMA "Return Products" wizard
+(purchase.claim.process.wizard) — the modal's product_id field is a
+Many2one combobox pre-filled with the claim line's ORIGINAL product on
+open (not empty).
+
+What failed (bug 1 — m2o races ahead of typed text):
+  m2o '.modal [name="product_id"] input' Product IT - A
+consistently selected an unrelated, wrong product (id 117, a Thai
+product) regardless of the search text. Root cause: m2o's implementation
+(pw_trace.js ~line 621) does `page.click(cellSel)` then
+`page.keyboard.type(searchText, {delay:50})` then immediately
+`waitForSelector('.o-autocomplete--dropdown-item')` and clicks the FIRST
+match — it does not verify the item's text matches what was typed. On a
+combobox that already has an autocomplete list open/cached from a
+partial keystroke, or any dropdown showing before typing settles, it
+clicks whatever is there first.
+
+Workaround: replaced with click + press Control+a + press Backspace +
+type <text> + waitidle + `pick <text>` (which matches by text content,
+see pw_trace.js ~line 633) instead of m2o.
+
+What failed (bug 2 — clicking a pre-filled combobox does not select-all):
+Even after switching to type-based entry, the field's EXISTING text
+("RMA Demo Product A") was not cleared by `click` — typing appended onto
+it, producing "RMA Demo Product AProduct IT - A", which matched no real
+product and only surfaced a "Create ..." option. Needed an explicit
+`press Control+a` + `press Backspace` after click to clear first.
+
+What failed (bug 3 — trailing `press Escape` after `pick` closes the
+whole modal, not just a leftover dropdown):
+Following the established pattern from another flow
+(rma-replace-other-product-confirm.txt) of `m2o ... / waitidle / press
+Escape`, I kept `press Escape` after `pick` "for safety". Every
+subsequent `.modal [name="quantity"] input` selector then timed out with
+0 elements — the Escape was closing the entire "Return Products" dialog
+(no lingering dropdown was open after pick's own click, so Escape bubbled
+to the modal's own keydown-to-close handler). Removing the trailing
+Escape after `pick` fixed it immediately; screenshot confirmed quantity/
+Create Invoice fields render correctly right after pick with no Escape
+needed.
+
+Suggested fix: (a) make `m2o` verify the clicked item's text contains the
+typed search string (same logic `pick` already has) before clicking, or
+just make `m2o` an alias for click+ctrl-a+backspace+type+waitidle+pick
+internally. (b) note in the docs that `press Escape` is only needed to
+dismiss a STILL-OPEN autocomplete overlay, and is unnecessary (and
+destructive to the enclosing modal) after `pick`, which already closes
+its own dropdown via a direct element click.
+
+## STATUS 2026-08-21 — FIXED in pw_trace.js
+Bugs 1 and 2 fixed: `m2o` now clicks the cell, sends Control+a + Backspace to
+clear any pre-filled value, types, then selects via the SAME text matcher `pick`
+uses (shared `pickFromDropdown`) — so it picks the MATCHING item instead of
+blind-clicking the first one, and prints the candidate list on a miss.
+Bug 3 documented: no trailing `press Escape` after m2o/pick (both close their own
+dropdown by direct element click; an extra Escape closes the enclosing modal).
+Noted in the README m2o row.

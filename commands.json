@@ -1,0 +1,222 @@
+[
+  {
+    "name": "login",
+    "usage": "login <user> <pass>",
+    "description": "log in — auto-skips if the saved session is still valid"
+  },
+  {
+    "name": "goto",
+    "usage": "goto <url>",
+    "description": "navigate"
+  },
+  {
+    "name": "mode",
+    "usage": "mode human|quick",
+    "description": "nav style for navmenu (human=click through, quick=jump via @id)"
+  },
+  {
+    "name": "navmenu",
+    "usage": "navmenu A > B > C [@id]",
+    "description": "navigate by clicking menu labels (human) or #action=id (quick)"
+  },
+  {
+    "name": "click",
+    "usage": "click <sel>",
+    "description": "standard Playwright click (waits for visibility)"
+  },
+  {
+    "name": "fclick",
+    "usage": "fclick <sel>",
+    "description": "force click (bypasses visibility checks)"
+  },
+  {
+    "name": "jclick",
+    "usage": "jclick <sel>",
+    "description": "JS .click() (OWL2-friendly for Odoo SPA buttons)"
+  },
+  {
+    "name": "clickbtn",
+    "usage": "clickbtn <text>",
+    "description": "click button by visible label (prints internal name)"
+  },
+  {
+    "name": "clickrpc",
+    "usage": "clickrpc <text>",
+    "description": "like clickbtn but FAILS unless a call_button/call_kw RPC fires"
+  },
+  {
+    "name": "buttons",
+    "usage": "buttons",
+    "description": "list visible buttons: internal name + label"
+  },
+  {
+    "name": "field",
+    "usage": "field <name> <value>",
+    "description": "edit an Odoo field in the active dialog/form and verify it"
+  },
+  {
+    "name": "rowset",
+    "usage": "rowset <table> <row> <column> <value>",
+    "description": "edit an existing row (#1 or field=exact text)"
+  },
+  {
+    "name": "fill",
+    "usage": "fill <sel> <text>",
+    "description": "fill input (use single quotes for selectors with spaces)"
+  },
+  {
+    "name": "date",
+    "usage": "date <sel> <value>",
+    "description": "set a date/datetime field WITHOUT clicking (no 30s picker hang)"
+  },
+  {
+    "name": "type",
+    "usage": "type <text>",
+    "description": "type text into focused element (keyboard events, no selector)"
+  },
+  {
+    "name": "m2o",
+    "usage": "m2o <cell_sel> <text>",
+    "description": "many2one: click cell → clear → type → pick the MATCHING result"
+  },
+  {
+    "name": "pick",
+    "usage": "pick <text>",
+    "description": "pick an OPEN autocomplete option by text (skips Create/Search More; OWL+v14)"
+  },
+  {
+    "name": "celltype",
+    "usage": "celltype <cell> <text>",
+    "description": "v14 editable-list: JS-click cell → focus its input → type"
+  },
+  {
+    "name": "boolcell",
+    "usage": "boolcell <cell> [on|off]",
+    "description": "editable-list checkbox: activate row, toggle, verify it flipped"
+  },
+  {
+    "name": "scroll",
+    "usage": "scroll <sel>",
+    "description": "scrollIntoView, no click/focus (Odoo scrolls inside .o_content)"
+  },
+  {
+    "name": "record",
+    "usage": "record <model> <id>",
+    "description": "open a record form directly by model + id (no menu needed)"
+  },
+  {
+    "name": "breadcrumb",
+    "usage": "breadcrumb [n]",
+    "description": "click a breadcrumb by index (default: parent level)"
+  },
+  {
+    "name": "cols",
+    "usage": "cols [table_sel]",
+    "description": "print a table's header cells with column index (order varies per table)"
+  },
+  {
+    "name": "addline",
+    "usage": "addline <field_name>",
+    "description": "add row to One2many list, waits for new row to appear"
+  },
+  {
+    "name": "press",
+    "usage": "press <key>",
+    "description": "keyboard press (Enter, Tab, Escape, ArrowDown...)"
+  },
+  {
+    "name": "wait",
+    "usage": "wait <ms>",
+    "description": "pause (fixed — prefer waitidle/waitfor)"
+  },
+  {
+    "name": "waitidle",
+    "usage": "waitidle [maxMs]",
+    "description": "wait until Odoo is idle (network + loading overlay), fast"
+  },
+  {
+    "name": "timeout",
+    "usage": "timeout <ms>",
+    "description": "set per-action fail-fast timeout (default 8000)"
+  },
+  {
+    "name": "strict",
+    "usage": "strict on|off",
+    "description": "abort the whole flow on first error/timeout (default off)"
+  },
+  {
+    "name": "screenshot",
+    "usage": "screenshot [name]",
+    "description": "save screenshot to traces/"
+  },
+  {
+    "name": "snapshot",
+    "usage": "snapshot",
+    "description": "print page element tree (for selector discovery)"
+  },
+  {
+    "name": "eval",
+    "usage": "eval <js>",
+    "description": "evaluate a JS EXPRESSION and print the result. It is wrapped in a plain function, so top-level await is a syntax error — write `eval odoo.__WOWL_DEBUG__.root.actionService.doAction(...)` (a returned promise is awaited for you) or an async IIFE, not `eval await ...`"
+  },
+  {
+    "name": "cookie",
+    "usage": "cookie <n> <v> [domain]",
+    "description": "set a raw browser cookie (works for HttpOnly, e.g. session_id)"
+  },
+  {
+    "name": "highlight",
+    "usage": "highlight <sel>",
+    "description": "draw Playwright's native pink box (screenshot-only, invisible in trace viewer)"
+  },
+  {
+    "name": "mark",
+    "usage": "mark <sel> [caption]",
+    "description": "inject a REAL red box+caption around an element (visible in trace viewer Snapshot tab)"
+  },
+  {
+    "name": "unmark",
+    "usage": "unmark",
+    "description": "remove all marks added by `mark`"
+  },
+  {
+    "name": "bbox",
+    "usage": "bbox <sel>",
+    "description": "print an element's {x,y,width,height} viewport box (for custom annotation)"
+  },
+  {
+    "name": "evals",
+    "usage": "evals <sel>",
+    "description": "print outerHTML of matched elements (structure inspection)"
+  },
+  {
+    "name": "find",
+    "usage": "find <sel>",
+    "description": "print matching elements (max 5)"
+  },
+  {
+    "name": "waitfor",
+    "usage": "waitfor <sel>",
+    "description": "wait for selector to appear"
+  },
+  {
+    "name": "url",
+    "usage": "url",
+    "description": "print current URL"
+  },
+  {
+    "name": "title",
+    "usage": "title",
+    "description": "print page title"
+  },
+  {
+    "name": "expect",
+    "usage": "expect <visible|hidden|text|value|state|dialog> <selector/value> [expected]",
+    "description": "assert a UI outcome"
+  },
+  {
+    "name": "done",
+    "usage": "done",
+    "description": "stop trace, save zip, exit"
+  }
+]
