@@ -13,5 +13,9 @@ __pycache__/
 .runtime/
 trace.config.json
 
-# recorded flows — contain real databases and credentials, keep local
-flows/
+# recorded flows — real databases and credentials, keep local.
+# The two placeholder templates below are the shipped examples: they contain
+# only <PLACEHOLDER> values and are what README's usage example points at.
+flows/*
+!flows/so-invoice-payment.txt
+!flows/login-only.txt

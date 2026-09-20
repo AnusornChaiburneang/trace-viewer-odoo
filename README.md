@@ -79,7 +79,12 @@ Every Odoo instance is different — different version, database, action IDs, bu
 Open this repo and ask it to help you set up. It will read `CLAUDE.md` and guide you through discovering your environment and generating a flow file.
 
 **Manually:**  
-See the commands reference below, then write a `flows/my-flow.txt`.
+Start from a shipped template — `flows/so-invoice-payment.txt` (a full
+SO -> invoice -> payment flow) or `flows/login-only.txt` — and replace the
+`<PLACEHOLDER>` values. Then see the commands reference below.
+
+Your own recordings go in `flows/` too, which is gitignored apart from those
+two templates, so real hostnames, databases and passwords stay local.
 
 ---
 
@@ -133,8 +138,8 @@ Or upload the `.zip` to a shared drive and teammates open it at https://trace.pl
 Both launchers accept the same options, before or after the positional arguments:
 
 ```bash
-./trace.sh so-confirm http://localhost:8069/web/login \
-  --task TICKET-123 --db my_test_db < flows/so-confirm.txt
+./trace.sh so-flow http://localhost:8069/web/login \
+  --task TICKET-123 --db my_test_db < flows/so-invoice-payment.txt
 ```
 
 `--task`, `--session-id`, and `--db` override `ODOO_TASK`, `ODOO_SESSION_ID`, and

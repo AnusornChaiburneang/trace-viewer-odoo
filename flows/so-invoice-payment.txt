@@ -1,0 +1,89 @@
+# SO → Invoice → Payment
+#
+# BEFORE RUNNING: replace every <PLACEHOLDER> below.
+# Ask your AI assistant to discover the right values for your environment.
+# See CLAUDE.md for the discovery steps.
+#
+# Usage:
+#   ./trace.sh SO-FLOW http://<ODOO_HOST>:8069/web/login < flows/so-invoice-payment.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# --- LOGIN ---
+# Auto-skips if the saved session (.sessions/) is still valid — no repeated logins
+login <ADMIN_USER> <ADMIN_PASS>
+screenshot
+
+# --- OPEN QUOTATIONS LIST ---
+# Replace <QUOTATIONS_ACTION_ID> with the action ID from your DB.
+# Discover with: SELECT id, name FROM ir_act_window WHERE res_model='sale.order';
+goto http://<ODOO_HOST>:8069/web#action=<QUOTATIONS_ACTION_ID>
+waitidle
+screenshot
+
+# --- NEW QUOTATION ---
+jclick button.o_list_button_add
+waitidle
+
+# --- SET CUSTOMER ---
+fill input.o-autocomplete--input <CUSTOMER_NAME>
+waitfor .o-autocomplete--dropdown-item
+click .o-autocomplete--dropdown-item
+waitidle
+screenshot
+
+# --- ADD PRODUCT ---
+# Odoo 17/18: "Add a product"  |  Odoo 14/15: "Add a line"
+click text=Add a product
+waitidle
+
+# Search by internal reference for exact match, or use a unique partial name.
+fill 'td[name="product_template_id"] input' <PRODUCT_SEARCH>
+# Odoo 14: fill 'td[name="product_id"] input' <PRODUCT_SEARCH>
+waitfor .o-autocomplete--dropdown-item
+click .o-autocomplete--dropdown-item
+waitidle
+
+# Optional: set quantity
+# fill 'td[name="product_uom_qty"] input' 1
+# press Tab
+# waitidle
+
+press Escape
+waitidle
+screenshot
+
+# --- CONFIRM SALE ORDER ---
+# clickbtn matches the VISIBLE label — no need to know the internal name
+# (which varies by module: action_confirm vs action_sale_ok vs custom).
+# Run `buttons` to list all visible buttons if unsure of the label.
+clickbtn Confirm
+waitidle
+screenshot
+
+# --- CREATE INVOICE ---
+clickbtn Create Invoice
+waitidle
+screenshot
+
+# --- CONFIRM CREATE INVOICE WIZARD ---
+click button[name="create_invoices"]
+waitidle
+screenshot
+url
+
+# --- CONFIRM (POST) INVOICE ---
+fclick button[name="action_post"]
+waitidle
+screenshot
+
+# --- REGISTER PAYMENT ---
+fclick button[name="action_register_payment"]
+waitidle
+screenshot
+
+# --- CREATE PAYMENT ---
+fclick button[name="action_create_payments"]
+waitidle
+screenshot
+url
+done
