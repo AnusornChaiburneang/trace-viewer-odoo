@@ -1,0 +1,32 @@
+# odoo-trace-kit on Docker (Ubuntu 24.04 host).
+#
+#   docker compose build
+#   docker compose run --rm tracekit test
+#   docker compose run --rm -T tracekit trace SMOKE http://host.docker.internal:8069/web/login \
+#       --db mydb < flows/login-only.txt
+#
+# Traces land in the `tracekit-data` volume under /data/traces; copy one out with
+#   docker compose cp tracekit:/data/traces/<file>.zip .     (while a container runs)
+# or bind-mount a host directory over /data instead of the named volume.
+services:
+  tracekit:
+    build:
+      context: .
+      args:
+        PLAYWRIGHT_VERSION: "1.61.1"
+    image: odoo-trace-kit:p1
+    init: true
+    # Chromium crashes on large pages when /dev/shm is Docker's 64 MB default.
+    shm_size: 1gb
+    environment:
+      CMD_TIMEOUT: "8000"
+    volumes:
+      - tracekit-data:/data
+      # Your own flows (gitignored, may contain credentials) — read-only.
+      - ./flows:/app/flows:ro
+    # Lets the container reach an Odoo running on the Docker host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  tracekit-data:

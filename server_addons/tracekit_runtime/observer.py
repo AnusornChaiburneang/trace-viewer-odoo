@@ -99,7 +99,11 @@ def wrap(original, key, directory):
         try:
             import gevent.monkey
             gevent_thread = gevent.monkey.is_module_patched('threading')
-        except ImportError:
+        except Exception:
+            # Not just ImportError: a gevent built against another greenlet
+            # raises ValueError ("greenlet.greenlet size changed") on import.
+            # That must not break every signed request; a broken gevent cannot
+            # have patched threading anyway.
             gevent_thread = False
         skipped = 'An existing profiler is active' if sys.getprofile() else 'Gevent worker is not supported' if gevent_thread else None
         run, request_id, step = identity

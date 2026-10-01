@@ -6,6 +6,7 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { parseOptions, resolveContext } = require('../run-context');
+const { loadConfig } = require('../config');
 const kit = path.resolve(__dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-results-'));
 const html = `<html><head><title>Fixture</title></head><body>
@@ -75,7 +76,12 @@ async function run(name, flow, args = [], extraEnv = {}, launcher = null) {
   assert.throws(() => parseOptions(['demo','http://localhost/?db=a','--db','b'],{}), /conflicts/);
   assert.throws(() => parseOptions(['demo','--task'],{}), /needs a value/);
   assert.throws(() => parseOptions(['demo','--oops','x'],{}), /Unknown option/);
-  assert.throws(() => parseOptions(['demo','--task','bad'],{}), /format/);
+  // The default task pattern is deliberately permissive (any ticket scheme);
+  // a stricter one comes from trace.config.json / TRACE_TASK_PATTERN.
+  assert.equal(parseOptions(['demo','--task','bad'],{}).task, 'bad');
+  const strictCfg = loadConfig({ TRACE_TASK_PATTERN: '^T\\d{2}-\\d{5}$' });
+  assert.throws(() => parseOptions(['demo','--task','bad'],{},strictCfg), /format/);
+  assert.equal(parseOptions(['demo','--task','T26-12345'],{},strictCfg).task, 'T26-12345');
   const base = `http://127.0.0.1:${server.address().port}`;
   assert.equal((await resolveContext(parseOptions(['demo'],{}),base)).task,'');
   assert.equal(contextLookups.length,0);

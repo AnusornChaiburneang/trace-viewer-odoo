@@ -1,0 +1,20 @@
+# Keep secrets, local state and artifacts out of the image.
+.git
+node_modules
+.sessions
+.runtime
+traces/*
+!traces/.gitkeep
+trace.config.json
+.env
+*.zip
+*.png
+__pycache__
+.claude
+.vscode
+
+# Recorded flows hold real databases and credentials. Mount ./flows at run time
+# instead; only the two placeholder templates ship in the image.
+flows/*
+!flows/so-invoice-payment.txt
+!flows/login-only.txt

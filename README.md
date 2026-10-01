@@ -19,6 +19,38 @@ Requires Node.js 18+. Works on Linux, macOS, Windows (WSL).
 
 ---
 
+## Docker (Ubuntu 24.04 server)
+
+The image is built on `mcr.microsoft.com/playwright:v1.61.1-noble`, adds Thai
+fonts (so Thai labels in screenshots don't render as boxes), and refuses to build
+if the kit's own tests fail or if `package-lock.json` pins a different Playwright
+than the image ships.
+
+```bash
+docker compose build
+docker compose run --rm tracekit test          # kit test suite (smoke test skips without Odoo)
+docker compose run --rm tracekit fonts         # list installed Thai fonts
+
+# Record a trace. -T is required when piping a flow on stdin.
+docker compose run --rm -T tracekit trace SMOKE \
+  http://host.docker.internal:8069/web/login --db mydb < flows/login-only.txt
+
+# ...or point at a flow inside the mounted ./flows directory
+docker compose run --rm tracekit trace SO-FLOW \
+  http://host.docker.internal:8069/web/login --db mydb --flow flows/so-invoice-payment.txt
+```
+
+- Traces, logs and `result.json` are written to `/data/traces`; saved login
+  sessions to `/data/sessions`. Both live in the `tracekit-data` volume — bind-mount
+  a host directory over `/data` if you want the files on the host directly.
+- `./flows` is mounted read-only, so your own (gitignored) flows are never baked
+  into the image.
+- `host.docker.internal` reaches an Odoo running on the Docker host.
+- If you bump Playwright in `package.json`, bump `PLAYWRIGHT_VERSION` in
+  `docker-compose.yml` to match; the build fails until they agree.
+
+---
+
 ## Usage
 
 ```bash
