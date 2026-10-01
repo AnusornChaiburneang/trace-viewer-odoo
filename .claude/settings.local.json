@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PGPASSWORD=odoo psql -U odoo -h 192.168.1.69 -p 5432 -d dev_hrp -c \"\\\\l\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:8069/web/login --max-time 5)",
+      "Bash(npm install *)",
+      "Read(//usr/local/n/versions/**)",
+      "Read(//opt/**)",
+      "Bash(find / -maxdepth 4 -iname \"*nvm*\" -type d)",
+      "Bash(command -v asdf)",
+      "Bash(command -v fnm)",
+      "Bash(command -v volta)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" https://nodejs.org --max-time 5)",
+      "Bash(apt list *)",
+      "Bash(curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh)",
+      "Bash(bash)"
+    ]
+  }
+}
