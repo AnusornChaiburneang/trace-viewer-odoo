@@ -1,0 +1,20 @@
+# P2 API-mode check — run WITH TRACE_API_MODE=1. Expected: steps 1–3 FAIL
+# (blocked on purpose), the rest pass, overall Result: FAILED (exit 1).
+#
+#   TRACE_API_MODE=1 TRACE_VAR_PASSWORD='***' ./trace.sh P2-API https://<host>/web/login \
+#     --db <db> --var USER=admin --flow flows/p2-api-mode-check.txt
+#
+# Look for in the log:
+#   goto example.com is not allowed in API mode
+#   eval is disabled in API mode
+#   cookie for evil.example is not allowed in API mode
+#   screenshot kept (file p2-api-kept.png remains after the run)
+
+goto https://example.com/
+eval document.title
+cookie stolen 1 evil.example
+login {{USER}} {{PASSWORD}}
+goto /web
+waitidle
+screenshot p2-api-kept viewport
+done

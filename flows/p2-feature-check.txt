@@ -1,0 +1,60 @@
+# P2 feature check — every P2 command in one read-only flow.
+# Works on any database with Sales installed (Odoo 14–19). It opens records and
+# fills a date on an unsaved new quotation; it never saves anything.
+#
+# Needs:  TRACE_VAR_PASSWORD=<admin password>   (secret: environment only)
+#         --var USER=admin                       (or TRACE_VAR_USER)
+#
+# Run (local):
+#   TRACE_VAR_PASSWORD='***' ./trace.sh P2-CHECK https://<host>/web/login --db <db> \
+#     --var USER=admin --flow flows/p2-feature-check.txt
+# Run (Docker):
+#   docker compose run --rm -e TRACE_VAR_PASSWORD='***' tracekit trace P2-CHECK \
+#     https://<host>/web/login --db <db> --var USER=admin --flow flows/p2-feature-check.txt
+#
+# Expect: Result: PASSED, 5 screenshots in <label>.shots/, and in result.json
+#   manual.steps (5, all passed), captured {so_id, so_name, state_label},
+#   variables ["PASSWORD","USER"], and no password anywhere in the log.
+
+strict on
+# [variables] {{USER}} from --var, {{PASSWORD}} from the environment (masked in logs)
+login {{USER}} {{PASSWORD}}
+mode human
+
+# [step + mark + navmenu @xmlid] menu labels are read in the user's language
+step 'Open the quotation list' 'Sales > Orders > Quotations'
+navmenu @sale.menu_sale_quotations
+expect visible .o_list_view
+mark '.o_data_row:first-child' 'First quotation'
+
+# [capture url/field/text + expect state <label>]
+step 'Open the first quotation' 'Click the first row to open it'
+jclick .o_data_row:first-child td.o_data_cell
+waitidle
+capture so_id url id
+capture so_name field name
+capture state_label text .o_statusbar_status .o_arrow_button_current
+expect state {{state_label}}
+
+# [goto relative + record + captured values reused]
+step 'Reopen the same quotation by id' 'Open {{so_name}} directly'
+goto /web
+waitidle
+record sale.order {{so_id}}
+expect text '.o_field_widget[name="name"]' {{so_name}}
+
+# [navmenu quick mode + expect state <key>] a new quotation is always 'draft'
+step 'Start a new quotation' 'New quotations start in the Quotation stage'
+mode quick
+navmenu @sale.menu_sale_quotations
+jclick button.o_list_button_add
+waitidle
+expect state draft
+mode human
+
+# [date ISO → user format + screenshot viewport]
+step 'Set the expiration date' 'ISO 2026-12-31 is converted to the user date format'
+date '.o_field_widget[name="validity_date"]' 2026-12-31
+mark '.o_field_widget[name="validity_date"]' 'Expiration'
+screenshot p2-extra-viewport viewport
+done
