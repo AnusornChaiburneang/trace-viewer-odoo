@@ -16,8 +16,8 @@
   },
   {
     "name": "navmenu",
-    "usage": "navmenu A > B > C [@id]",
-    "description": "navigate by clicking menu labels (human) or #action=id (quick)"
+    "usage": "navmenu A > B > C [@id] | navmenu @module.xmlid",
+    "description": "navigate by clicking menu labels (human) or #action=id (quick); @xmlid reads the labels in the user's language"
   },
   {
     "name": "click",
@@ -67,7 +67,7 @@
   {
     "name": "date",
     "usage": "date <sel> <value>",
-    "description": "set a date/datetime field WITHOUT clicking (no 30s picker hang)"
+    "description": "set a date/datetime field WITHOUT clicking (no 30s picker hang); ISO 2026-06-01[ 18:00] is converted to the user's format"
   },
   {
     "name": "type",
@@ -146,8 +146,18 @@
   },
   {
     "name": "screenshot",
-    "usage": "screenshot [name]",
-    "description": "save screenshot to traces/"
+    "usage": "screenshot [name] [full|viewport]",
+    "description": "save screenshot to traces/ (default full page)"
+  },
+  {
+    "name": "step",
+    "usage": "step '<title>' ['<description>']",
+    "description": "start a user-manual section; when the next step starts or the flow ends, a 1440x900 screenshot is saved and marks are cleared"
+  },
+  {
+    "name": "capture",
+    "usage": "capture <name> field <f> | url id | text <sel>",
+    "description": "record a value (e.g. document number, record id) for {{name}} and result.json"
   },
   {
     "name": "snapshot",
@@ -212,7 +222,7 @@
   {
     "name": "expect",
     "usage": "expect <visible|hidden|text|value|state|dialog> <selector/value> [expected]",
-    "description": "assert a UI outcome"
+    "description": "assert a UI outcome; `expect state` accepts the label or the internal key (e.g. sale)"
   },
   {
     "name": "done",

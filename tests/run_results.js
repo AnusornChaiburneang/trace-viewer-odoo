@@ -11,7 +11,8 @@ const kit = path.resolve(__dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-results-'));
 const html = `<html><head><title>Fixture</title></head><body>
 <div class="o_action_manager"><input id="amount" value="10"><div id="status">Ready</div>
-<div class="o_form_view"><div class="o_statusbar_status"><button class="o_arrow_button_current">Confirmed</button></div></div>
+<div class="o_form_view"><div class="o_statusbar_status"><button class="o_arrow_button_current" data-value="sale">Confirmed</button></div><div class="o_field_widget" name="name"><span>S00042</span></div><input id="due"></div>
+<a id="ext" href="http://blocked.invalid/">external</a>
 <div class="modal"><h2 class="modal-title">Transfer</h2></div>
 <table><tr><td id="check"><input type="checkbox"></td><td id="empty"></td></tr></table>
 <input id="search"><div class="o-autocomplete--dropdown-item">Product A</div>
@@ -28,7 +29,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/web/session/get_session_info') {
     const cookie = Object.fromEntries((req.headers.cookie || '').split('; ').filter(Boolean).map(s => s.split('=')));
     res.setHeader('Content-Type','application/json');
-    return res.end(JSON.stringify({ result: cookie.user ? { uid: 7, username: cookie.user, db: cookie.db, server_version: '17.0-fixture' } : {} }));
+    return res.end(JSON.stringify({ result: cookie.user ? { uid: 7, username: cookie.user, db: cookie.db, server_version: '17.0-fixture', user_context: { lang: 'en_GB' } } : { user_context: { lang: 'en_GB' } } }));
   }
   if (url.pathname.startsWith('/web/dataset/')) {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -36,6 +37,15 @@ const server = http.createServer(async (req, res) => {
     if (method === 'disconnect') return req.socket.destroy();
     if (method === 'html_error') { res.writeHead(502); return res.end('proxy error'); }
     if (method === 'late') await new Promise(resolve => setTimeout(resolve, 300));
+    // Minimal Odoo metadata for the P2 helpers (date format, menu xmlids).
+    const model = body.params.model, reply = result => { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); };
+    if (model === 'res.lang') return reply([{ date_format: '%d/%m/%Y', time_format: '%H:%M:%S' }]);
+    if (model === 'ir.model.data') return reply(JSON.stringify(body.params.args).includes('menu_sale_quotations') ? [{ res_id: 30 }] : []);
+    if (model === 'ir.ui.menu') {
+      const menus = { 30: { name: 'Quotations', parent_id: [20, 'Orders'], action: 'ir.actions.act_window,12' },
+        20: { name: 'Orders', parent_id: [10, 'Sales'], action: false }, 10: { name: 'Sales', parent_id: false, action: false } };
+      return reply([{ id: body.params.args[0][0], ...menus[body.params.args[0][0]] }]);
+    }
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify(method === 'explode' ? {jsonrpc:'2.0', id:body.id,
       error:{code:200, message:'Odoo Server Error', data:{name:'odoo.exceptions.ValidationError',
@@ -204,6 +214,87 @@ done
   assert(!redacted.result.flow.content.includes('test-pass'));
   assert.equal(redacted.result.flow.content,'login [redacted]\ndone\n');
   console.log('PASS unique run artifacts, immutable file snapshots, source hashing, and credential redaction');
+
+
+  // ---- P2: variables, manual steps, capture, language-neutral helpers ------
+  assert.deepEqual(parseOptions(['demo','--var','A=1','--var','T1.so=S1'],{TRACE_VAR_PW:'x'}).vars, { PW: 'x', A: '1', 'T1.so': 'S1' });
+  assert.throws(() => parseOptions(['demo','--var','bad'],{}), /NAME=VALUE/);
+  const pngSize = file => { const b = fs.readFileSync(file); return [b.readUInt32BE(16), b.readUInt32BE(20)]; };
+  r = await run('p2-manual', `strict on
+step 'Open order {{CUSTOMER}}' 'Type the amount, then check the status'
+fill #amount {{CUSTOMER}}
+mark #status 'Status here'
+capture so_name field name
+goto /web#id=42&model=sale.order&view_type=form
+capture so_id url id
+capture status_text text #status
+step 'Use captured {{so_name}}'
+expect hidden [data-pw-mark]
+fill #search {{so_name}}
+expect value #search S00042
+fill #amount {{PASSWORD}}
+expect state sale
+expect state Confirmed
+date #due 2026-06-01
+expect value #due 01/06/2026
+date #due 2026-06-01 18:05
+expect value #due 01/06/2026 18:05:00
+done
+`, ['--var', 'CUSTOMER=Deco'], { TRACE_VAR_PASSWORD: 'sup3rsecret' });
+  assert.equal(r.code, 0, r.output);
+  const manual = r.result.manual.steps;
+  assert.deepEqual(manual.map(s => [s.no, s.title, s.status]), [[1, 'Open order Deco', 'passed'], [2, 'Use captured S00042', 'passed']]);
+  assert.equal(manual[0].description, 'Type the amount, then check the status');
+  assert.equal(manual[0].line, 2); assert.equal(manual[0].end_line, 8);
+  for (const s of manual) assert.deepEqual(pngSize(path.join(tmp, s.screenshot)), [1440, 900], s.screenshot);
+  assert.match(manual[0].screenshot, /\.shots\/01-open-order-deco\.png$/);
+  assert.deepEqual(r.result.captured, { so_name: 'S00042', so_id: 42, status_text: 'Ready' });
+  assert.deepEqual(r.result.variables, ['CUSTOMER', 'PASSWORD']);
+  assert(!r.output.includes('sup3rsecret'), 'secret printed');
+  assert(!fs.readFileSync(path.join(tmp, fs.readdirSync(tmp).find(f => f.startsWith('p2-manual') && f.endsWith('.result.json')))).toString().includes('sup3rsecret'));
+  assert(r.result.steps.some(s => s.command === 'fill #amount {{PASSWORD}}'));
+  assert.match(r.output, /date: ISO 2026-06-01 → 01\/06\/2026 \(en_GB\)/);
+  console.log('PASS variables, secret masking, manual steps with 1440x900 shots, capture, expect state key, ISO dates');
+
+  r = await run('p2-failed-step', "step 'Broken'\nfill #amount {{NOPE}}\nstep 'After'\ndone\n");
+  assert.equal(r.code, 1, r.output);
+  assert.equal(r.result.manual.steps[0].status, 'failed');
+  assert.match(r.result.manual.steps[0].error, /unknown variable \{\{NOPE\}\}/);
+  assert(fs.existsSync(path.join(tmp, r.result.manual.steps[0].screenshot)));
+  assert.equal(r.result.manual.steps[1].status, 'passed');
+  r = await run('p2-eof', "step 'No done at the end'\nexpect value #amount 10\n");
+  assert.equal(r.result.manual.steps.length, 1); assert(r.result.manual.steps[0].screenshot);
+  console.log('PASS failed manual step is marked and still photographed; EOF closes the last step');
+
+  r = await run('p2-navmenu-quick', 'mode quick\nnavmenu @sale.menu_sale_quotations\nurl\ndone\n');
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /navmenu @sale\.menu_sale_quotations → Sales > Orders > Quotations \(action 12\)/);
+  assert.match(r.output, /#action=12/);
+  r = await run('p2-navmenu-human', 'navmenu Wrong > Labels @sale.menu_sale_quotations\nnavmenu @sale.no_such_menu\ndone\n');
+  assert.equal(r.code, 1, r.output);
+  assert.match(r.output, /\[flow said: Wrong > Labels\]/);
+  assert.match(r.output, /NOT FOUND: "Sales" \(app level\)/);
+  assert.match(r.result.steps[1].error, /no menu with xmlid sale\.no_such_menu/);
+  console.log('PASS navmenu @xmlid resolves translated labels and action id; unknown xmlid fails clearly');
+
+  r = await run('p2-api-mode', `goto http://example.invalid/
+eval 1+1
+cookie a b evil.test
+goto /web
+click #ext
+url
+screenshot kept-in-api-mode
+done
+`, [], { TRACE_API_MODE: '1' });
+  assert.deepEqual(r.result.steps.slice(0, 4).map(s => s.status), ['failed', 'failed', 'failed', 'passed']);
+  assert.match(r.result.steps[0].error, /not allowed in API mode/);
+  assert.match(r.result.steps[1].error, /eval is disabled in API mode/);
+  assert.match(r.output, /BLOCKED navigation to blocked\.invalid/);
+  // The blocked document load leaves Chromium's error page, never the foreign site.
+  assert(!/\n  http:\/\/blocked\.invalid/.test(r.output), 'browser reached the blocked host');
+  assert(fs.existsSync(path.join(tmp, 'kept-in-api-mode.png')));
+  assert.equal(r.result.api_mode, true);
+  console.log('PASS API mode blocks foreign goto/navigation/cookies and eval, and keeps screenshots');
 
 
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { server.close(); console.log(`Test artifacts: ${tmp}`); });

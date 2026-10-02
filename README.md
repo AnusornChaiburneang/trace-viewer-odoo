@@ -218,13 +218,79 @@ done
 Quote selectors containing spaces. Text comparisons normalize whitespace; input
 values match exactly. Assertions retry until the action timeout. Visible/text/value
 checks require exactly one visible match, so ambiguous selectors fail.
-`expect state <label>` checks the current Odoo statusbar label;
+`expect state <label|key>` checks the current Odoo statusbar label, or its internal
+selection key (`expect state sale`), which is the same in every UI language;
 `expect dialog <title>` checks the visible modal title. These are UI assertions;
 use an explicit selector assertion when a customized widget has different markup.
 
 `tests/run_results.js` exercises pass/fail exits, strict stopping, assertions,
 login verification, session isolation, and launcher context against a synthetic
 local HTTP server. It never accesses an Odoo database.
+
+## User-manual steps, variables and capture
+
+These commands turn a flow into material for a user manual: ordered sections, each
+with a title, a description and a fixed-size screenshot.
+
+```text
+strict on
+login admin {{PASSWORD}}
+
+step 'Open the quotation list' 'Sales > Orders > Quotations'
+navmenu @sale.menu_sale_quotations
+mark '.o_data_row:first-child' 'First quotation'
+
+step 'Open the quotation {{SO}}'
+record sale.order {{SO_ID}}
+capture so_name field name
+capture so_id url id
+expect state sale
+
+step 'Set the expiration date'
+date '.o_field_widget[name="validity_date"]' 2026-12-31
+done
+```
+
+- `step '<title>' ['<description>']` opens a section. When the next `step` starts,
+  or the flow ends (with `done`, at end of input, or on a strict abort), the section
+  is closed: the mouse is parked in a corner, systray counters are hidden, a
+  **1440×900 viewport screenshot** is written to `<label>.shots/NN-<slug>.png`, and
+  any `mark` boxes are cleared so they never bleed into the next section. A section
+  is `failed` if any of its commands failed; it is still photographed.
+  `result.json` lists the sections under `manual.steps` (number, title, description,
+  first/last source line, status, error, screenshot path). Commands before the first
+  `step` (typically `login`) belong to no section. Step screenshots are always kept.
+- `{{NAME}}` placeholders are replaced before a line runs. Values come from
+  `--var NAME=VALUE` (repeatable), from `TRACE_VAR_NAME` environment variables, and
+  from earlier `capture`s. Use the environment for secrets: command-line arguments
+  are visible in `ps`. The log and `result.json` keep the line **as written**
+  (`fill #password {{PASSWORD}}`), and the values of variables whose name contains
+  pass/secret/token/key/pwd are masked in every log line and error. An unknown
+  variable fails that line.
+- `capture <name> field <field_name>` reads the value shown in the topmost dialog or
+  main form; `capture <name> url id` reads the record id from the URL (Odoo ≤17
+  `#id=42`, Odoo 18+ `/odoo/…/42`); `capture <name> text <selector>` reads visible
+  text. Captured values are stored in `result.json` → `captured` and are available
+  as `{{name}}` to later lines (and, in the API, to later transactions).
+- `navmenu @module.xmlid` reads the menu path from Odoo in the user's language and
+  then clicks through it as usual, so one flow works for English and Thai screens.
+  In `mode quick` it jumps straight to the menu's action. Labels written before the
+  `@xmlid` are only for readability.
+- `date <selector> 2026-12-31` (or `2026-12-31 18:00`) converts an ISO date to the
+  user's `res.lang` format. `date` accepts the input or the field selector, and on
+  Odoo 19 (where a date field is a button until clicked) it opens the field first.
+- `screenshot [name] viewport` takes a viewport-only shot; the default stays full page.
+- `goto` accepts a path relative to the current page (`goto /odoo`).
+
+### API mode
+
+`TRACE_API_MODE=1` is set by the API server for flows submitted by other systems:
+
+- `goto` and any page or frame load may only reach the target's host, plus hosts in
+  `TRACE_ALLOWED_HOSTS` (comma-separated). Other document loads are aborted and
+  logged as `BLOCKED navigation`.
+- `eval` is refused; `cookie` may only set cookies for an allowed host.
+- every screenshot is kept (`KEEP_SHOTS` is implied).
 
 ## Edit Odoo fields and existing rows by name
 

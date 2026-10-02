@@ -5,11 +5,25 @@ const { loadConfig } = require('./config');
 function parseOptions(argv, env = process.env, cfg = loadConfig(env)) {
   const opts = { task: env.ODOO_TASK || '', sessionId: env.ODOO_SESSION_ID || '', db: env.ODOO_DB || '' };
   opts.config = cfg;
+  // Flow variables, substituted into {{name}} placeholders. Secrets (passwords,
+  // API keys) belong in TRACE_VAR_<NAME> environment variables, not --var:
+  // command-line arguments are visible to every user via `ps`.
+  opts.vars = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (k.startsWith('TRACE_VAR_') && k.length > 10) opts.vars[k.slice(10)] = v;
+  }
   const positionals = [];
   const keys = { '--task': 'task', '--session-id': 'sessionId', '--db': 'db', '--flow': 'flowFile' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--python-trace') { opts.pythonTrace = true; }
+    else if (arg === '--var') {
+      const pair = argv[i + 1];
+      const m = pair && pair.match(/^([A-Za-z_][A-Za-z0-9_.]*)=(.*)$/s);
+      if (!m) throw new Error('--var needs NAME=VALUE (NAME: letters, digits, _ and .)');
+      opts.vars[m[1]] = m[2];
+      i++;
+    }
     else if (keys[arg]) {
       if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(`${arg} needs a value`);
       opts[keys[arg]] = argv[++i];
@@ -20,7 +34,7 @@ function parseOptions(argv, env = process.env, cfg = loadConfig(env)) {
     // Name the script actually invoked — saying "trace-local.sh" to someone
     // running ./trace.sh sends them looking for a file they may not have.
     const via = (process.argv[1] || '').split(/[\\/]/).pop() || 'trace.sh';
-    throw new Error(`Usage: ${via} <name> [url] [--task TICKET] [--session-id SID] [--db DB] [--flow path.txt] [--python-trace]`);
+    throw new Error(`Usage: ${via} <name> [url] [--task TICKET] [--session-id SID] [--db DB] [--flow path.txt] [--var NAME=VALUE]... [--python-trace]`);
   }
   opts.name = positionals[0];
   if (/[\/\\]/.test(opts.name) || opts.name === '.' || opts.name === '..') throw new Error('Trace name cannot contain path separators');

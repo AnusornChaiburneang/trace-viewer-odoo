@@ -45,23 +45,53 @@ const logFile = path.join(tracesDir, `${label}.log`);
 // Tee every console line to a per-run log file, flushed SYNCHRONOUSLY, so a run
 // killed by SIGTERM/timeout still shows the last command it reached (stdout may
 // be block-buffered and lost on kill; the log file is durable).
+// Flow variables ({{name}}): --var / TRACE_VAR_* plus values recorded by
+// `capture` during this run. Values of secret-looking names are masked in
+// every console/log line, so `fill #password {{PASSWORD}}` can never leak.
+const vars = { ...options.vars };
+const captured = {};
+const SECRET_NAME = /pass|secret|token|key|pwd/i;
+const secretValues = Object.entries(vars)
+  .filter(([k, v]) => SECRET_NAME.test(k) && String(v).length >= 3).map(([, v]) => String(v));
+const maskSecrets = (s) => secretValues.reduce((out, v) => out.split(v).join('[redacted]'), s);
+const substituteVars = (text) => text.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g, (m, name) => {
+  if (Object.prototype.hasOwnProperty.call(captured, name)) return String(captured[name]);
+  if (Object.prototype.hasOwnProperty.call(vars, name)) return String(vars[name]);
+  throw new Error(`unknown variable {{${name}}} — pass it with --var ${name}=... or TRACE_VAR_${name}, or capture it earlier in the flow`);
+});
+
+// API mode (set by the API server): only the target's origin (plus
+// TRACE_ALLOWED_HOSTS) may be navigated to, `eval` is disabled, and every
+// screenshot is kept because it is part of the deliverable.
+const apiMode = /^(1|true|on|yes)$/i.test(process.env.TRACE_API_MODE || '');
+const allowedHosts = new Set([new URL(options.targetUrl).hostname,
+  ...(process.env.TRACE_ALLOWED_HOSTS || '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean)]);
+const hostAllowed = (url) => { try { return allowedHosts.has(new URL(url).hostname.toLowerCase()); } catch { return false; } };
+
 try { fs.writeFileSync(logFile, ''); } catch { /* ignore */ }
 const _appendLog = (s) => { try { fs.appendFileSync(logFile, s + '\n'); } catch { /* ignore */ } };
 {
   const _stdout = console.log.bind(console);
   const _stderr = console.error.bind(console);
-  const fmt = (a) => a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+  const fmt = (a) => maskSecrets(a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
   console.log = (...a) => { const s = fmt(a); _appendLog(s); _stdout(s); };
   console.error = (...a) => { const s = fmt(a); _appendLog(s); _stderr(s); };
 }
 
 const resultFile = path.join(tracesDir, `${label}.result.json`);
 const report = {
-  schema_version: 2, run_id: runId, flow_name: options.name, status: 'running', started_at: startedAt,
+  schema_version: 3, run_id: runId, flow_name: options.name, status: 'running', started_at: startedAt,
   context: { task: options.task || null, session_id: options.sessionId || null,
     target_url: targetUrl, requested_db: options.db || null, verified_session: null,
     source: sourceRevision(process.cwd()), toolkit: sourceRevision(__dirname) },
   steps: [], trace_file: traceFile, log_file: logFile,
+  // `step` blocks: one manual section each, with a viewport screenshot.
+  manual: { viewport: { width: 1440, height: 900 }, shots_dir: null, steps: [] },
+  // Values recorded by `capture`, for later transactions ({{name}}).
+  captured,
+  // Variable NAMES only; values may be secrets.
+  variables: Object.keys(vars).sort(),
+  api_mode: apiMode,
 };
 const saveReport = () => {
   report.flow = capture.snapshot();
@@ -86,7 +116,7 @@ try {
   // Screenshots taken this run — deleted on exit (they're captured in the
   // trace too), so one flow leaves just one .zip + .log. Set KEEP_SHOTS=1 to keep.
   const shots = [];
-  const keepShots = /^(1|true|on|yes)$/i.test(process.env.KEEP_SHOTS || '');
+  const keepShots = apiMode || /^(1|true|on|yes)$/i.test(process.env.KEEP_SHOTS || '');
 
   // Warn when a selector-taking command (fill/date/mark/m2o) got an UNQUOTED
   // selector that the tokenizer likely split — the classic silent failure
@@ -280,6 +310,21 @@ try {
     console.log(`Session: reusing saved login (${path.basename(sessionFile)})`);
   }
   context = await browser.newContext(contextOpts);
+
+  // API mode: a submitted flow must not be able to point the server's browser
+  // at internal hosts (SSRF). Block top-level/frame document loads to any host
+  // that is not the target or listed in TRACE_ALLOWED_HOSTS. Sub-resources
+  // (fonts, images) are left alone so Odoo pages still render.
+  if (apiMode) {
+    await context.route('**/*', (route) => {
+      const req = route.request();
+      if (req.resourceType() === 'document' && !hostAllowed(req.url())) {
+        console.error(`  BLOCKED navigation to ${new URL(req.url()).host} (API mode allows: ${[...allowedHosts].join(', ')})`);
+        return route.abort('blockedbyclient');
+      }
+      return route.continue();
+    });
+  }
 
   // Track in-flight RPCs (excluding the bus/longpolling connections that never close)
   // so `waitidle` can detect real idle instead of relying on networkidle
@@ -577,7 +622,9 @@ try {
       // Try in PRIORITY order — a comma-union querySelector returns the first
       // match in DOM order, which is the .o_navbar_apps_menu *container* (a
       // no-op click), not the button inside it. v17 grid button first.
-      const sels = ['.o_grid_apps_menu__button', '.o_navbar_apps_menu button', '.o_menu_apps a.full', '.o_menu_apps .dropdown-toggle', '.o_navbar_apps_menu'];
+      // Odoo 19 (enterprise) inside an app shows only `a.o_menu_toggle`, which
+      // returns to the home app grid — last, so older versions keep their opener.
+      const sels = ['.o_grid_apps_menu__button', '.o_navbar_apps_menu button', '.o_menu_apps a.full', '.o_menu_apps .dropdown-toggle', '.o_navbar_apps_menu', 'a.o_menu_toggle'];
       for (const s of sels) { const t = document.querySelector(s); if (t) { t.click(); return; } }
     }).catch(() => {});
     // Wait for the app grid to actually populate (portal render can outlast a
@@ -647,15 +694,128 @@ try {
     return true;
   };
 
+  // --- Odoo RPC from the logged-in page --------------------------------------
+  // Uses the browser's own session, so it sees exactly what the user sees
+  // (rights, language). user_context carries lang so names come back translated.
+  const odooRpc = (model, method, args, kwargs = {}) => page.evaluate(async ({ model, method, args, kwargs }) => {
+    const post = async (url, params) => {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params }) });
+      const j = await r.json();
+      if (j.error) throw new Error((j.error.data && j.error.data.message) || j.error.message || 'RPC error');
+      return j.result;
+    };
+    const info = await post('/web/session/get_session_info', {});
+    const context = { ...((info && info.user_context) || {}), ...(kwargs.context || {}) };
+    return post(`/web/dataset/call_kw/${model}/${method}`, { model, method, args, kwargs: { ...kwargs, context } });
+  }, { model, method, args, kwargs });
+
+  // xmlid → { labels: [app, section, …, item], actionId } for navmenu @xmlid.
+  const resolveMenuXmlid = async (xmlid) => {
+    const dot = xmlid.indexOf('.');
+    if (dot < 1) throw new Error(`navmenu: "@${xmlid}" is not an xmlid (expected module.name, e.g. sale.menu_sale_quotations)`);
+    const rows = await odooRpc('ir.model.data', 'search_read',
+      [[['module', '=', xmlid.slice(0, dot)], ['name', '=', xmlid.slice(dot + 1)], ['model', '=', 'ir.ui.menu']]],
+      { fields: ['res_id'], limit: 1 });
+    if (!rows || !rows.length) throw new Error(`navmenu: no menu with xmlid ${xmlid}`);
+    const labels = [];
+    let id = rows[0].res_id, actionId = null;
+    for (let depth = 0; id && depth < 12; depth++) {
+      const [menu] = await odooRpc('ir.ui.menu', 'read', [[id], ['name', 'parent_id', 'action']]);
+      if (!menu) break;
+      labels.unshift(menu.name);
+      if (depth === 0 && menu.action) { const m = String(menu.action).match(/,(\d+)$/); if (m) actionId = m[1]; }
+      id = menu.parent_id && menu.parent_id[0];
+    }
+    return { labels, actionId };
+  };
+
+  // ISO date → the user's display format (res.lang date_format/time_format).
+  let langFormats = null;
+  const toUserDate = async (iso) => {
+    if (!langFormats) {
+      const info = await page.evaluate(async () => {
+        const r = await fetch('/web/session/get_session_info', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: {} }) });
+        return (await r.json()).result;
+      }).catch(() => null);
+      const lang = info && info.user_context && info.user_context.lang;
+      if (!lang) throw new Error('date: cannot read the user language to convert an ISO date — log in first, or give the date in the display format');
+      const [row] = await odooRpc('res.lang', 'search_read', [[['code', '=', lang]]], { fields: ['date_format', 'time_format'], limit: 1 });
+      if (!row) throw new Error(`date: language ${lang} not found in res.lang`);
+      langFormats = { lang, date: row.date_format, time: row.time_format || '%H:%M:%S' };
+    }
+    const [, Y, mo, d, H = '00', Mi = '00', S = '00'] = iso.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+    const h12 = String(((+H + 11) % 12) + 1).padStart(2, '0');
+    const tokens = { '%d': d, '%m': mo, '%Y': Y, '%y': Y.slice(2), '%H': H, '%M': Mi, '%S': S, '%I': h12, '%p': +H < 12 ? 'AM' : 'PM', '%%': '%' };
+    const render = (fmt) => fmt.replace(/%./g, (t) => {
+      if (!(t in tokens)) throw new Error(`date: unsupported format token ${t} in ${fmt} (${langFormats.lang})`);
+      return tokens[t];
+    });
+    const hasTime = /[ T]\d{2}:\d{2}/.test(iso);
+    return hasTime ? `${render(langFormats.date)} ${render(langFormats.time)}` : render(langFormats.date);
+  };
+
+  // --- Manual steps -----------------------------------------------------------
+  // `step '<title>' ['<description>']` opens a section of the user manual. When
+  // the next step starts (or the flow ends), the section is closed: a viewport
+  // screenshot is taken with any `mark` boxes still visible, then the marks are
+  // cleared so they never bleed into the next step.
+  const shotsDir = path.join(tracesDir, `${label}.shots`);
+  let currentStep = null;
+  const slugify = (s) => s.normalize('NFKD').replace(/[^\x00-\x7F]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'step';
+  const closeStep = async () => {
+    const s = currentStep;
+    if (!s) return;
+    currentStep = null;
+    s.end_line = s.last_line;
+    delete s.last_line;
+    try {
+      // Park the mouse in the bottom-right corner: a pointer left on the last
+      // clicked field shows a hover tooltip that does not belong in a manual.
+      await page.mouse.move(1439, 899).catch(() => {});
+      await waitIdle(5000).catch(() => {});
+      await page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {});
+      // Hide counters that change between runs (unread chat, activities) so
+      // the same step produces the same picture every time.
+      await page.evaluate(() => {
+        const st = document.createElement('style');
+        st.id = '__pw_stable_shot';
+        st.textContent = '.o_menu_systray .badge,.o_menu_systray .o-mail-MessagingMenu-counter,' +
+          '.o_menu_systray .o_notification_counter{visibility:hidden!important}';
+        document.head.appendChild(st);
+      }).catch(() => {});
+      fs.mkdirSync(shotsDir, { recursive: true });
+      const file = `${String(s.no).padStart(2, '0')}-${slugify(s.title)}.png`;
+      await page.screenshot({ path: path.join(shotsDir, file), fullPage: false, animations: 'disabled', caret: 'hide' });
+      s.screenshot = path.join(path.basename(shotsDir), file);
+      report.manual.shots_dir = shotsDir;
+      console.log(`  step ${s.no} ${s.status}: "${s.title}" → ${s.screenshot}`);
+    } catch (e) {
+      s.screenshot = null;
+      s.screenshot_error = String(e.message || e).split('\n')[0];
+      console.error(`  step ${s.no}: screenshot failed — ${s.screenshot_error}`);
+    } finally {
+      await page.evaluate(() => { const st = document.getElementById('__pw_stable_shot'); if (st) st.remove(); }).catch(() => {});
+      await clearMarks();
+      saveReport();
+    }
+  };
+
   const rl = readline.createInterface({ input: capture.input });
   capture.start();
 
   let lineNumber = 0;
   for await (const line of rl) {
     lineNumber++;
+    const template = line.trim();
+    if (!template || template.startsWith('#')) continue; // skip empty lines and comments
+    // {{name}} placeholders are resolved before tokenizing; the echo, the log
+    // and result.json keep the TEMPLATE, so substituted secrets never print.
+    let raw = template, varError = null;
+    try { raw = substituteVars(template); } catch (e) { varError = e; }
     // Quote-aware tokenizer: 'my selector with spaces' becomes one token
-    const raw = line.trim();
-    if (!raw || raw.startsWith('#')) continue; // skip empty lines and comments
 
     const parts = [];
     const quoted = [];               // parallel to parts: was this token single-quoted?
@@ -671,10 +831,11 @@ try {
     const cmd = parts[0];
     // rawRest used by eval/jclick to avoid quote-stripping JS code
     const rawRest = raw.slice(cmd.length + 1);
+    const templateRest = template.slice(template.indexOf(' ') + 1 || template.length);
 
     // Echo the command as it STARTS — flushed to the log file immediately, so a
     // killed/hung run shows exactly which command it was on.
-    const displayCommand = ['login', 'cookie'].includes(cmd) ? `${cmd} [redacted]` : raw;
+    const displayCommand = ['login', 'cookie'].includes(cmd) ? `${cmd} [redacted]` : template;
     console.log(`> ${displayCommand}`);
     const step = { step_id: `${runId}-step-${report.steps.length + 1}`, line: lineNumber, command: displayCommand, status: 'running', started_at: new Date().toISOString() };
     const stepStart = Date.now();
@@ -686,10 +847,26 @@ try {
     // Dispatch the command. Wrapped in Promise.race below so a genuine hang is
     // capped instead of looking like a silent multi-minute freeze.
     const dispatch = async () => {
-      if (inQ && ['fill', 'date', 'm2o', 'celltype', 'boolcell', 'mark', 'expect', 'field', 'rowset'].includes(cmd))
+      if (varError) throw varError;
+      if (inQ && ['fill', 'date', 'm2o', 'celltype', 'boolcell', 'mark', 'expect', 'field', 'rowset', 'step', 'capture'].includes(cmd))
         throw new Error('Unclosed single quote');
+      if (cmd !== 'step' && currentStep) currentStep.last_line = lineNumber;
       if (cmd === 'done') {
+        await closeStep();
         return 'STOP';
+
+      } else if (cmd === 'step') {
+        // step '<title>' ['<description>']   — or: step <title words…>
+        // Opens a user-manual section; the previous one is closed (and
+        // photographed) first.
+        await closeStep();
+        const title = quoted[1] ? parts[1] : parts.slice(1).join(' ');
+        const description = quoted[1] ? parts.slice(2).join(' ') : '';
+        if (!title) throw new Error("step needs a title, e.g.  step 'Select the customer' 'Type the name and pick it'");
+        currentStep = { no: report.manual.steps.length + 1, title, description, line: lineNumber,
+          last_line: lineNumber, end_line: null, status: 'passed', error: null, screenshot: null };
+        report.manual.steps.push(currentStep);
+        console.log(`  step ${currentStep.no}: ${title}`);
 
       } else if (cmd === 'timeout') {
         const ms = parseInt(parts[1] || '', 10);
@@ -703,7 +880,12 @@ try {
         console.log(`  strict mode: ${strict ? 'ON — abort on first error' : 'off'}`);
 
       } else if (cmd === 'goto') {
-        await page.goto(parts.slice(1).join(' '), { timeout: 20000 });
+        // Relative paths (/web#action=12) resolve against the current page, so
+        // a flow does not have to hard-code the host.
+        const dest = new URL(parts.slice(1).join(' '), page.url()).href;
+        if (apiMode && !hostAllowed(dest))
+          throw new Error(`goto ${new URL(dest).host} is not allowed in API mode (allowed: ${[...allowedHosts].join(', ')})`);
+        await page.goto(dest, { timeout: 20000 });
         await page.waitForLoadState('domcontentloaded');
         console.log(`  → ${page.url()}`);
         // An Odoo 18-style /odoo/<path> URL returns HTTP 200 on Odoo 17 but
@@ -739,11 +921,24 @@ try {
         // Usage: navmenu App > Section > [Group >] Item [@<actionId>]
         //   human mode → clicks each label in turn (shows the real breadcrumb)
         //   quick  mode → jumps to #action=<id> if @<id> is given; else clicks through
+        //   navmenu @module.menu_xmlid  → labels read from the menu itself, in the
+        //   user's current language, so one flow works for EN and TH screens.
         let spec = rawRest.trim();
         let actionId = null;
         const m = spec.match(/\s*@(\d+)\s*$/);
         if (m) { actionId = m[1]; spec = spec.slice(0, m.index).trim(); }
-        const labels = spec.split('>').map(s => s.trim()).filter(Boolean);
+        let labels = spec.split('>').map(s => s.trim()).filter(Boolean);
+        const xm = spec.match(/\s*@([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)\s*$/);
+        if (xm) {
+          const given = spec.slice(0, xm.index).split('>').map(s => s.trim()).filter(Boolean);
+          const resolved = await resolveMenuXmlid(xm[1]);
+          actionId = resolved.actionId;
+          // Explicit labels (for readability) are ignored in favour of the
+          // menu's real, translated names — those are what is on screen.
+          labels = resolved.labels;
+          console.log(`  navmenu @${xm[1]} → ${labels.join(' > ')}${actionId ? ` (action ${actionId})` : ''}`
+            + (given.length && given.join('>') !== labels.join('>') ? `  [flow said: ${given.join(' > ')}]` : ''));
+        }
         if (labels.length === 0) {
           throw new Error('  navmenu: no menu path given (e.g. navmenu Inventory > Configuration > Products > Purchase Product Group)');
         } else if (navMode === 'quick' && actionId) {
@@ -841,12 +1036,43 @@ try {
         // Usage: date '<selector>' <value>   (quote selectors with spaces!)
         warnIfTruncated(parts, quoted, cmd);
         const sel = parts[1];
-        const value = parts.slice(2).join(' ');
-        await page.fill(sel, value, { timeout: actionTimeout });
+        let value = parts.slice(2).join(' ');
+        // ISO input (2026-06-01 or 2026-06-01 18:00[:00]) is converted to the
+        // logged-in user's date format, so a flow is language-independent.
+        if (/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/.test(value)) {
+          const iso = value;
+          value = await toUserDate(iso);
+          console.log(`  date: ISO ${iso} → ${value} (${langFormats.lang})`);
+        }
+        // Find the real <input>. Odoo ≤18: the selector is the input, or a field
+        // that contains one. Odoo 19: the field shows a <button class="o_input">
+        // with a condensed date ("Nov 1"); the input only exists after a click.
+        // A v17-style '… input' selector that matches nothing is retried on the
+        // field itself, so one flow runs on both.
+        const token = `d${Date.now()}`;
+        const findTarget = (s) => page.evaluate(({ s, token }) => {
+          const el = document.querySelector(s);
+          if (!el) return null;
+          if (el.matches('input')) { el.setAttribute('data-pw-date', token); return 'input'; }
+          const field = el.closest('.o_field_widget') || el;
+          field.setAttribute('data-pw-date', token);
+          if (field.querySelector('input')) return 'field-input';
+          if (el.matches('button.o_input') || field.querySelector('button.o_input')) return 'button';
+          return 'none';
+        }, { s, token });
+        let kind = await findTarget(sel);
+        if (!kind && /\s+input$/.test(sel)) kind = await findTarget(sel.replace(/\s+input$/, ''));
+        if (!kind || kind === 'none') throw new Error(`date: no date input found for ${sel}`);
+        const inputSel = kind === 'input' ? `input[data-pw-date="${token}"]` : `[data-pw-date="${token}"] input`;
+        if (kind === 'button') {
+          await page.locator(`[data-pw-date="${token}"] button.o_input`).first().click({ timeout: actionTimeout });
+          await page.waitForSelector(inputSel, { timeout: actionTimeout });
+        }
+        await page.fill(inputSel, value, { timeout: actionTimeout });
         await page.evaluate((s) => {
           const el = document.querySelector(s);
           if (el) el.dispatchEvent(new Event('change', { bubbles: true }));
-        }, sel);
+        }, inputSel);
         // Only dismiss a picker that is ACTUALLY open. `date` never clicks the
         // field, so usually no picker exists — and an Escape with nothing to
         // close bubbles to Odoo's Dialog component and shuts the whole
@@ -856,7 +1082,11 @@ try {
         const pickerOpen = await page.evaluate(() => !!document.querySelector(
           '.o_datetime_picker, .o_date_picker, .bootstrap-datetimepicker-widget, .datepicker'));
         if (pickerOpen) await page.keyboard.press('Escape').catch(() => {});
-        await page.evaluate((s) => { const el = document.querySelector(s); if (el) el.blur(); }, sel);
+        await page.evaluate(({ s, token }) => {
+          const el = document.querySelector(s);
+          if (el) el.blur();
+          document.querySelectorAll(`[data-pw-date="${token}"]`).forEach(e => e.removeAttribute('data-pw-date'));
+        }, { s: inputSel, token });
         console.log(`  date: ${sel} = "${value}"${pickerOpen ? ' (closed open picker)' : ''}`);
 
       } else if (cmd === 'type') {
@@ -1079,6 +1309,13 @@ try {
           else if (count === 1 && await loc.isVisible()) {
             actual = kind === 'value' ? await loc.inputValue() : normalize(await loc.innerText());
             matched = kind === 'visible' || actual === (kind === 'value' ? expected : normalize(expected));
+            if (!matched && kind === 'state') {
+              // `expect state sale` — the internal selection key, identical in
+              // every UI language, carried by the statusbar button.
+              const key = await loc.getAttribute('data-value').catch(() => null);
+              if (key && key === expected.trim()) { matched = true; actual = `${actual} [${key}]`; }
+              else if (key) actual = `${actual} [${key}]`;
+            }
           } else { actual = `${count} matches (expected one visible element)`; }
           if (matched) break;
           await page.waitForTimeout(100);
@@ -1087,12 +1324,16 @@ try {
         console.log(`  expect ${kind}: PASS`);
 
       } else if (cmd === 'screenshot') {
-        const imgName = parts[1] || `${label}-${Date.now()}`;
+        // Usage: screenshot [name] [full|viewport]   (default full page)
+        const modes = ['full', 'viewport'];
+        const mode = modes.includes(parts.at(-1)) ? parts.at(-1) : 'full';
+        const nameParts = modes.includes(parts.at(-1)) ? parts.slice(1, -1) : parts.slice(1);
+        const imgName = nameParts[0] || `${label}-${Date.now()}`;
         const imgPath = path.join(tracesDir, imgName.endsWith('.png') ? imgName : `${imgName}.png`);
         // Wait for web-fonts (Font Awesome icons, Thai fonts) to finish loading,
         // else icon glyphs render as empty □ "tofu" boxes in the capture.
         await page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {});
-        await page.screenshot({ path: imgPath, fullPage: true });
+        await page.screenshot({ path: imgPath, fullPage: mode === 'full' });
         shots.push(imgPath); // tracked for end-of-run cleanup (they're in the trace)
         console.log(`  screenshot: ${imgPath}`);
 
@@ -1111,6 +1352,7 @@ try {
         console.log(s);
 
       } else if (cmd === 'eval') {
+        if (apiMode) throw new Error('eval is disabled in API mode (it can run arbitrary code in the browser)');
         const result = await page.evaluate(new Function(`return (${rawRest})`));
         console.log(`  eval: ${JSON.stringify(result)}`);
 
@@ -1195,6 +1437,8 @@ try {
         const value = parts[2];
         const domain = parts[3] || new URL(page.url()).hostname;
         const cpath = parts[4] || '/';
+        if (apiMode && !allowedHosts.has(domain.replace(/^\./, '').toLowerCase()))
+          throw new Error(`cookie for ${domain} is not allowed in API mode`);
         await context.addCookies([{ name, value, domain, path: cpath }]);
         console.log(`  cookie set: ${name} on ${domain}${cpath}`);
 
@@ -1430,6 +1674,46 @@ try {
       } else if (cmd === 'title') {
         console.log(`  ${await page.title()}`);
 
+      } else if (cmd === 'capture') {
+        // Record a value for later steps/transactions ({{name}}) and result.json.
+        // Usage: capture <name> field <field_name>   value shown in the active form/dialog
+        //        capture <name> url id               record id from the current URL
+        //        capture <name> text <selector>      visible text of an element
+        const name = parts[1], source = parts[2], arg = parts.slice(3).join(' ');
+        if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(name || '') || !['field', 'url', 'text'].includes(source))
+          throw new Error('Usage: capture <name> field <field_name> | capture <name> url id | capture <name> text <selector>');
+        let value = null;
+        if (source === 'url') {
+          const u = new URL(page.url());
+          const hash = new URLSearchParams(u.hash.replace(/^#/, ''));
+          // Odoo ≤17: #id=42&model=… ; Odoo 18+: /odoo/<action>/42
+          value = hash.get('id') || u.searchParams.get('id') || (u.pathname.match(/\/(\d+)\/?$/) || [])[1] || null;
+          if (value) value = Number(value);
+        } else if (source === 'text') {
+          if (!arg) throw new Error('capture … text needs a selector');
+          value = (await page.locator(arg).first().innerText({ timeout: actionTimeout })).replace(/\s+/g, ' ').trim();
+        } else {
+          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(arg)) throw new Error(`capture … field needs a field name, got "${arg}"`);
+          await waitIdle(5000).catch(() => {});
+          value = await page.evaluate((f) => {
+            const visible = el => el && el.getClientRects().length > 0;
+            const modals = [...document.querySelectorAll('.modal')].filter(visible);
+            // Topmost dialog first, then the main form, then anywhere.
+            const scopes = [modals.at(-1), document.querySelector('.o_action_manager .o_form_view'), document].filter(Boolean);
+            const sel = `.o_field_widget[name="${f}"], div[name="${f}"], span[name="${f}"]`;
+            let el = null;
+            for (const scope of scopes) { el = [...scope.querySelectorAll(sel)].find(visible); if (el) break; }
+            if (!el) return null;
+            const input = el.matches('input,textarea,select') ? el : el.querySelector('input,textarea,select');
+            if (input) return input.tagName === 'SELECT' ? (input.selectedOptions[0] || {}).textContent || '' : input.value;
+            return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+          }, arg);
+        }
+        if (value === null || value === '') throw new Error(`capture ${name}: no value found for ${source} ${arg}`.trim());
+        captured[name] = value;
+        saveReport();
+        console.log(`  captured ${name} = ${JSON.stringify(value)}`);
+
       } else if (cmd !== '') {
         throw new Error(`  Unknown command: ${cmd}`);
       }
@@ -1445,10 +1729,11 @@ try {
       step.status = 'passed';
       if (res === 'STOP') stop = true;
     } catch (e) {
-      const msg = (e && e.message ? String(e.message).split('\n')[0] : String(e));
+      const msg = maskSecrets(e && e.message ? String(e.message).split('\n')[0] : String(e));
       step.status = 'failed';
       step.error = msg;
-      const tgt = ['login', 'cookie'].includes(cmd) ? '[redacted]' : (rawRest || parts.slice(1).join(' ')).trim();
+      if (currentStep && cmd !== 'step') { currentStep.status = 'failed'; currentStep.error = currentStep.error || msg; }
+      const tgt = ['login', 'cookie'].includes(cmd) ? '[redacted]' : templateRest.trim();
       if (msg === '__HARD_TIMEOUT__') {
         console.error(`  TIMEOUT on ${cmd} ${tgt} — exceeded ${Math.max(actionTimeout * 4, 60000)}ms hard cap`);
       } else if (/timeout|exceeded/i.test(msg)) {
@@ -1466,6 +1751,9 @@ try {
     if (stop || aborted) break;
   }
 
+  // A flow that ends without `done` (EOF, strict abort) still closes and
+  // photographs its last manual step.
+  await closeStep();
   rl.close();
   console.log('\nStopping trace...');
   // Persist the login session so the next run against the same host+db

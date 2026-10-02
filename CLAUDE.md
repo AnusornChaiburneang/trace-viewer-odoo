@@ -318,6 +318,23 @@ versions (v17 apps `.o_grid_apps_menu__button` opener + `a.o-app-menu-item`; sec
 `mode human` still draws the red pointer at each step. It waits for the app grid / dropdown to
 actually render (not a fixed sleep), so it's not flaky across versions.
 
+**Odoo 19 (verified on KST staging, 2026-10-02):** inside an app the navbar has only
+`a.o_menu_toggle` (back to the app grid) — navmenu uses it as the last-resort opener.
+Date fields are a `<button class="o_input">` ("Nov 1") until clicked; `date` opens the
+field itself, and a v17-style `'… input'` selector is retried on the field. `record`
+works (redirects to `/odoo/<model>/<id>`).
+
+**Language-independent flows (EN/TH):** prefer `navmenu @module.xmlid` (labels are read
+from Odoo in the user's language), `clickbtn <internal_name>`, `expect state <key>`
+(e.g. `sale`) and ISO dates (`date <sel> 2026-12-31`). Mixed or transliterated labels
+still work; these are recommendations, not rules.
+
+**Manual steps:** wrap each manual section in `step '<title>' ['<description>']`; the
+section's 1440x900 screenshot is taken automatically when the next step starts.
+Put secrets in `TRACE_VAR_<NAME>` env vars and write `{{NAME}}` in the flow. Use
+`capture` to pass a record id / document number to later lines. See README
+"User-manual steps, variables and capture" and "API mode".
+
 ---
 
 ## Deliverable
