@@ -21,3 +21,8 @@ flows/*
 !flows/login-only.txt
 !flows/p2-feature-check.txt
 !flows/p2-api-mode-check.txt
+
+# API bearer tokens (docker compose secret)
+secrets/
+# local API data dir
+data/

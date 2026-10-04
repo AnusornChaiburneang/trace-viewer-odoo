@@ -75,6 +75,13 @@ else
   bad "results/context integration tests"
 fi
 
+echo "=== 1e. API server against a fake Odoo ==="
+if node tests/api.js; then
+  ok "API: validation, batches, languages, bundle, manual, callback, retention"
+else
+  bad "API end-to-end tests"
+fi
+
 echo
 echo "=== 2. browser smoke test (login page only) ==="
 if ! curl -sf -o /dev/null --max-time 5 "$BASE/web/login"; then

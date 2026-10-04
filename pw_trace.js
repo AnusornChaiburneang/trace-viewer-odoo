@@ -404,9 +404,13 @@ try {
   console.log(`\nLoaded: ${await page.title()}`);
   console.log(`URL:    ${page.url()}`);
 
-  console.log('\n--- Commands ---');
-  for (const command of require('./commands.json')) {
-    console.log(`  ${command.usage.padEnd(42)} ${command.description}`);
+  // The command list helps someone typing at a terminal; in a file/piped/API
+  // run it is just 50 lines of noise in every log.
+  if (capture.snapshot().capture === 'interactive') {
+    console.log('\n--- Commands ---');
+    for (const command of require('./commands.json')) {
+      console.log(`  ${command.usage.padEnd(42)} ${command.description}`);
+    }
   }
 
 
@@ -1673,6 +1677,35 @@ try {
 
       } else if (cmd === 'title') {
         console.log(`  ${await page.title()}`);
+
+      } else if (cmd === 'lang') {
+        // Switch the logged-in user's interface language (res.users.lang), then
+        // reload so the UI renders in it. Records the previous language in
+        // result.json → lang_switch, so the caller can restore it afterwards.
+        // Usage: lang <code>   e.g. lang th_TH
+        const code = parts[1];
+        if (!/^[a-z]{2,3}(_[A-Za-z0-9@]+)?$/.test(code || '')) throw new Error('Usage: lang <code>, e.g. lang th_TH');
+        const info = await page.evaluate(async () => {
+          const r = await fetch('/web/session/get_session_info', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: {} }) });
+          return (await r.json()).result;
+        }).catch(() => null);
+        if (!info || !info.uid) throw new Error('lang: not logged in — run login first');
+        const previous = (info.user_context && info.user_context.lang) || null;
+        if (!report.lang_switch) report.lang_switch = { from: previous, to: code };
+        else report.lang_switch.to = code;
+        if (previous === code) {
+          console.log(`  lang: already ${code}`);
+        } else {
+          const active = await odooRpc('res.lang', 'search_read', [[['code', '=', code], ['active', '=', true]]], { fields: ['code'], limit: 1 });
+          if (!active || !active.length) throw new Error(`lang: ${code} is not installed/active in this database (Settings → Languages)`);
+          await odooRpc('res.users', 'write', [[info.uid], { lang: code }]);
+          langFormats = null; // date format follows the language
+          await page.reload({ timeout: 20000 });
+          const ms = await waitIdle(15000);
+          console.log(`  lang: ${previous} → ${code} (${ms}ms)`);
+        }
+        saveReport();
 
       } else if (cmd === 'capture') {
         // Record a value for later steps/transactions ({{name}}) and result.json.

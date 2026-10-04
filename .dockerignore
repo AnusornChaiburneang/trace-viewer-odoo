@@ -18,3 +18,5 @@ __pycache__
 flows/*
 !flows/so-invoice-payment.txt
 !flows/login-only.txt
+secrets
+data

@@ -1,0 +1,70 @@
+{
+  "target": {
+    "url": "https://YOUR-ODOO.example.com/web/login",
+    "db": "YOUR_DB",
+    "version": "17.0",
+    "login": "manual_bot",
+    "password": "SET-ME",
+    "api_key": "optional, used from P4"
+  },
+  "lang": ["en_US", "th_TH"],
+  "on_failure": "continue",
+  "callback_url": "https://manual-system.example.com/hooks/trace",
+  "output": {
+    "bundle": true,
+    "manual": {
+      "formats": ["md", "html"],
+      "title": { "en_US": "Sales manual", "th_TH": "คู่มือการขาย" }
+    }
+  },
+  "options": { "mode": "human", "timeout_ms": 8000, "transaction_timeout_s": 600 },
+  "transactions": [
+    {
+      "id": "T1",
+      "title": { "en_US": "Open a quotation", "th_TH": "เปิดใบเสนอราคา" },
+      "steps": [
+        {
+          "title": { "en_US": "Open the quotation list", "th_TH": "เปิดรายการใบเสนอราคา" },
+          "description": { "en_US": "Sales > Orders > Quotations", "th_TH": "ขาย > คำสั่งซื้อ > ใบเสนอราคา" },
+          "commands": ["navmenu @sale.menu_sale_quotations"],
+          "expect": ["visible .o_list_view"],
+          "highlight": { "selector": ".o_data_row:first-child", "caption": { "en_US": "First quotation", "th_TH": "ใบเสนอราคาแรก" } }
+        },
+        {
+          "title": { "en_US": "Open the first quotation", "th_TH": "เปิดใบเสนอราคาแรก" },
+          "commands": ["jclick .o_data_row:first-child td.o_data_cell", "waitidle"]
+        }
+      ],
+      "capture": { "so_id": "url id", "so_name": "field name" }
+    },
+    {
+      "id": "T2",
+      "depends_on": "T1",
+      "title": { "en_US": "Reopen {{T1.so_name}}", "th_TH": "เปิด {{T1.so_name}} อีกครั้ง" },
+      "steps": [
+        {
+          "title": { "en_US": "Open {{T1.so_name}} by id", "th_TH": "เปิด {{T1.so_name}} ด้วยเลขที่" },
+          "commands": ["record sale.order {{T1.so_id}}"],
+          "expect": ["text '.o_field_widget[name=\"name\"]' {{T1.so_name}}"]
+        }
+      ]
+    },
+    {
+      "id": "T3",
+      "title": { "en_US": "Start a new quotation", "th_TH": "สร้างใบเสนอราคาใหม่" },
+      "steps": [
+        {
+          "title": { "en_US": "New quotation", "th_TH": "ใบเสนอราคาใหม่" },
+          "description": { "en_US": "A new quotation starts in the Quotation stage", "th_TH": "ใบเสนอราคาใหม่เริ่มที่สถานะใบเสนอราคา" },
+          "commands": ["navmenu @sale.menu_sale_quotations", "jclick button.o_list_button_add", "waitidle"],
+          "expect": ["state draft"]
+        },
+        {
+          "title": { "en_US": "Set the expiration date", "th_TH": "กำหนดวันหมดอายุ" },
+          "commands": ["date '.o_field_widget[name=\"validity_date\"]' 2026-12-31"],
+          "highlight": { "selector": ".o_field_widget[name=\"validity_date\"]", "caption": { "en_US": "Expiration", "th_TH": "วันหมดอายุ" } }
+        }
+      ]
+    }
+  ]
+}

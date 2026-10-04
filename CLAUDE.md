@@ -335,6 +335,12 @@ Put secrets in `TRACE_VAR_<NAME>` env vars and write `{{NAME}}` in the flow. Use
 `capture` to pass a record id / document number to later lines. See README
 "User-manual steps, variables and capture" and "API mode".
 
+**HTTP API (P3):** other systems submit batches to `api/server.js` (Docker: `docker compose up -d`,
+127.0.0.1:8080). A request is JSON — transactions → steps → `commands` (normal flow lines) —
+compiled to flows and run per language; results come back as `bundle.zip` + `manifest.json` +
+draft manual. See README "HTTP API" and `api/examples/sales-manual.json`. Captions must be given
+for every requested language; `login`/`lang`/`step`/`done`/`eval`/`cookie` are reserved there.
+
 ---
 
 ## Deliverable

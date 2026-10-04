@@ -1,32 +1,65 @@
 # odoo-trace-kit on Docker (Ubuntu 24.04 host).
 #
-#   docker compose build
+# API (default):
+#   mkdir -p secrets && echo "manual-system:$(openssl rand -hex 24)" > secrets/api_tokens.txt
+#   docker compose build && docker compose up -d
+#   curl http://127.0.0.1:8080/api/v1/health
+#
+# CLI (one-off runs, same image):
 #   docker compose run --rm tracekit test
 #   docker compose run --rm -T tracekit trace SMOKE http://host.docker.internal:8069/web/login \
 #       --db mydb < flows/login-only.txt
 #
-# Traces land in the `tracekit-data` volume under /data/traces; copy one out with
-#   docker compose cp tracekit:/data/traces/<file>.zip .     (while a container runs)
-# or bind-mount a host directory over /data instead of the named volume.
+# API runs live in the `tracekit-data` volume under /data/runs/<run_id>/;
+# CLI traces under /data/traces. Bind-mount a host directory over /data to see
+# them directly on the host.
 services:
   tracekit:
     build:
       context: .
       args:
         PLAYWRIGHT_VERSION: "1.61.1"
-    image: odoo-trace-kit:p1
+    image: odoo-trace-kit:p3
+    command: ["api"]
+    restart: unless-stopped
     init: true
     # Chromium crashes on large pages when /dev/shm is Docker's 64 MB default.
     shm_size: 1gb
+    # One run peaks at ~1.4 GB (Chromium + Node); leaves room for the OS on a 4 GB host.
+    mem_limit: 3g
+    # No domain/HTTPS yet: the API is reachable from this host only. Put a
+    # reverse proxy with TLS (Caddy/nginx) in front before exposing it.
+    ports:
+      - "127.0.0.1:8080:8080"
     environment:
       CMD_TIMEOUT: "8000"
+      TRACE_DATA_DIR: /data
+      TRACE_API_TOKENS_FILE: /run/secrets/api_tokens
+      MAX_CONCURRENT_RUNS: "1"
+      MAX_TRANSACTIONS_PER_RUN: "20"
+      TRACE_RETENTION_DAYS: "14"      # trace.zip files
+      TRACE_KEEP_DAYS: "180"          # screenshots, manifest, manual
+      # TRACE_PUBLIC_URL: https://trace.example.com     # absolute links in responses/callbacks
+      # TRACE_CALLBACK_SECRET: change-me                 # HMAC-SHA256 of callback bodies
+      # TRACE_TARGET_ALLOWLIST: kst.odoo19e.com          # restrict which Odoo hosts may be targeted
+    secrets:
+      - api_tokens
     volumes:
       - tracekit-data:/data
-      # Your own flows (gitignored, may contain credentials) — read-only.
+      # Your own flows (gitignored, may contain credentials) — read-only, for CLI runs.
       - ./flows:/app/flows:ro
     # Lets the container reach an Odoo running on the Docker host.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+secrets:
+  api_tokens:
+    file: ./secrets/api_tokens.txt
 
 volumes:
   tracekit-data:

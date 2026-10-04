@@ -160,6 +160,11 @@
     "description": "record a value (e.g. document number, record id) for {{name}} and result.json"
   },
   {
+    "name": "lang",
+    "usage": "lang <code>",
+    "description": "switch the logged-in user's UI language (e.g. th_TH) and reload; the previous language is recorded in result.json"
+  },
+  {
     "name": "snapshot",
     "usage": "snapshot",
     "description": "print page element tree (for selector discovery)"

@@ -292,6 +292,79 @@ done
 - `eval` is refused; `cookie` may only set cookies for an allowed host.
 - every screenshot is kept (`KEEP_SHOTS` is implied).
 
+## HTTP API (batches for user manuals)
+
+`api/server.js` lets another system submit test cases and get back screenshots,
+a manifest, traces and an optional draft manual. It runs `pw_trace.js` in API mode
+for every transaction, in every requested language.
+
+```bash
+mkdir -p secrets && echo "manual-system:$(openssl rand -hex 24)" > secrets/api_tokens.txt
+docker compose build && docker compose up -d          # listens on 127.0.0.1:8080 only
+curl -s http://127.0.0.1:8080/api/v1/health
+```
+
+Without Docker: `TRACE_API_TOKENS=manual-system:<token> TRACE_DATA_DIR=./data node api/server.js`.
+The API is published on `127.0.0.1` because Odoo passwords travel in the request
+body: put a reverse proxy with TLS (Caddy/nginx) in front before exposing it.
+
+| Method | Path | |
+|---|---|---|
+| `POST` | `/api/v1/runs` | submit a batch → `202 {run_id, links}`; `422 {details:[{path,message}]}` if invalid |
+| `GET` | `/api/v1/runs/{id}` | status (`queued` `running` `passed` `partial` `failed` `cancelled` `error`), static checks, per-language results |
+| `GET` | `/api/v1/runs/{id}/manifest` | `manifest.json` |
+| `GET` | `/api/v1/runs/{id}/bundle.zip` | everything below in one zip |
+| `GET` | `/api/v1/runs/{id}/manual.md` / `manual.html` `?lang=th_TH` | draft manual (when requested) |
+| `GET` | `/api/v1/runs/{id}/tx/{tx}/trace.zip?lang=` | one transaction's Playwright trace |
+| `GET` | `/api/v1/runs/{id}/files/<path>` | one file from the bundle, e.g. a screenshot |
+| `GET` | `/api/v1/runs?status=&limit=` | your runs, newest first |
+| `POST` | `/api/v1/runs/{id}/cancel` | cancel a queued or running batch |
+| `POST` | `/api/v1/checks` | validate a request and check the server/version, no browser |
+| `GET` | `/api/v1/health` | no auth |
+
+Every call except `health` needs `Authorization: Bearer <token>`; each token's runs
+are visible only to that token. Results endpoints answer `409` until the run finishes.
+
+**Request** — see [api/examples/sales-manual.json](api/examples/sales-manual.json):
+
+- `target`: `url`, `db`, `version` (checked against the server), `login` and
+  `password` for the browser. They are held in memory only — never written to disk —
+  so a run interrupted by a server restart ends as `error` and must be resubmitted.
+  `api_key` is accepted and used from P4 (RPC data checks).
+- `lang`: one code or a list (`["en_US","th_TH"]`). The whole batch runs once per
+  language: the user's language is switched before (`lang` command) and restored after.
+- `transactions[]`: `id`, `title`, optional `depends_on`, `steps[]`, optional `capture`
+  (`{"so_id": "url id", "so_name": "field name"}`). Later transactions use captured
+  values as `{{T1.so_id}}` in commands and titles.
+- `steps[]`: `title`, optional `description`, `commands` (flow lines — `login`, `lang`,
+  `step`, `done`, `strict`, `eval` and `cookie` are reserved), optional `expect`
+  (`["state sale"]`) and `highlight` (`{selector, caption}` → red box in the shot).
+- Every title/description/caption is a string when one language is requested, or
+  `{lang: text}` with **every** requested language present (`captions_complete`);
+  captions are never generated.
+- `on_failure`: `stop` (default; everything after a failure is `skipped`) or
+  `continue` (only transactions that `depends_on` a failed one are skipped → `partial`).
+- `output.manual`: `{formats: ["md","html"], title}` for a draft manual;
+  `callback_url`: POSTed `{event:"run.finished", …status}` when the batch ends
+  (signed `X-TraceKit-Signature: sha256=<HMAC>` when `TRACE_CALLBACK_SECRET` is set,
+  retried 4 times). Polling `GET /runs/{id}` works too.
+
+**Bundle**
+
+```text
+manifest.json                         run, static checks, per-language results, steps, captured values
+<lang>/<tx>/shots/NN-<slug>.png       1440×900, one per step (failed steps keep their shot here)
+<lang>/<tx>/trace.zip | result.json | run.log
+manual/<lang>.md | manual/<lang>.html  draft manual; failed/skipped steps show a warning, not a picture
+```
+
+**Configuration** (environment): `TRACE_API_TOKENS` / `TRACE_API_TOKENS_FILE`
+(`name:token` per line, token ≥ 16 chars), `TRACE_DATA_DIR` (`/data`),
+`MAX_CONCURRENT_RUNS` (1), `MAX_TRANSACTIONS_PER_RUN` (20), `TRACE_RETENTION_DAYS`
+(14 — trace.zip files), `TRACE_KEEP_DAYS` (180 — whole runs), `TRACE_PUBLIC_URL`
+(absolute links), `TRACE_CALLBACK_SECRET`, `TRACE_TARGET_ALLOWLIST` (allowed Odoo hosts),
+`TRACE_ALLOWED_HOSTS` (extra hosts a flow may navigate to), `TRACE_API_PORT` (8080).
+
 ## Edit Odoo fields and existing rows by name
 
 ```text
