@@ -1,0 +1,29 @@
+# Publish the API to the team over HTTPS (Caddy + automatic Let's Encrypt).
+#
+#   cp .env.example .env        # set TRACE_DOMAIN and TRACE_PUBLIC_URL
+#   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
+#
+# Needs: a DNS A record TRACE_DOMAIN → this server, and ports 80 + 443 open.
+# The API container itself stays on 127.0.0.1:8080; only Caddy faces outside.
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - tracekit
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      TRACE_DOMAIN: ${TRACE_DOMAIN:?set TRACE_DOMAIN in .env}
+      TRACE_ALLOWED_CLIENTS: ${TRACE_ALLOWED_CLIENTS:-0.0.0.0/0}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data          # certificates — keep this volume
+      - caddy-config:/config
+    mem_limit: 256m
+
+volumes:
+  caddy-data:
+  caddy-config:

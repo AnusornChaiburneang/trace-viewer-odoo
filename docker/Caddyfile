@@ -1,0 +1,32 @@
+# Public HTTPS entry for the Trace Kit API. Caddy obtains and renews the TLS
+# certificate automatically (Let's Encrypt) once DNS for TRACE_DOMAIN points at
+# this server and ports 80/443 are open.
+{$TRACE_DOMAIN} {
+	encode gzip
+
+	# Optional: only accept calls from known networks (office, the manual
+	# system's server). Uncomment and list CIDRs separated by spaces.
+	# @blocked not remote_ip {$TRACE_ALLOWED_CLIENTS}
+	# respond @blocked "forbidden" 403
+
+	# Only the API is published; anything else is a 404.
+	handle /api/* {
+		reverse_proxy tracekit:8080 {
+			# a batch upload is at most 1 MB; bundles stream back
+			flush_interval -1
+		}
+	}
+	handle {
+		respond "not found" 404
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	log {
+		output stdout
+		format console
+	}
+}

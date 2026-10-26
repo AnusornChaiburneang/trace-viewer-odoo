@@ -27,8 +27,8 @@ services:
     shm_size: 1gb
     # One run peaks at ~1.4 GB (Chromium + Node); leaves room for the OS on a 4 GB host.
     mem_limit: 3g
-    # No domain/HTTPS yet: the API is reachable from this host only. Put a
-    # reverse proxy with TLS (Caddy/nginx) in front before exposing it.
+    # Reachable from this host only. To publish it to the team over HTTPS,
+    # add docker-compose.proxy.yml (Caddy) — never publish 8080 directly.
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -39,9 +39,10 @@ services:
       MAX_TRANSACTIONS_PER_RUN: "20"
       TRACE_RETENTION_DAYS: "14"      # trace.zip files
       TRACE_KEEP_DAYS: "180"          # screenshots, manifest, manual
-      # TRACE_PUBLIC_URL: https://trace.example.com     # absolute links in responses/callbacks
-      # TRACE_CALLBACK_SECRET: change-me                 # HMAC-SHA256 of callback bodies
-      # TRACE_TARGET_ALLOWLIST: kst.odoo19e.com          # restrict which Odoo hosts may be targeted
+      # From .env (see .env.example); empty = feature off.
+      TRACE_PUBLIC_URL: ${TRACE_PUBLIC_URL:-}            # absolute links in responses/callbacks
+      TRACE_CALLBACK_SECRET: ${TRACE_CALLBACK_SECRET:-}  # HMAC-SHA256 of callback bodies
+      TRACE_TARGET_ALLOWLIST: ${TRACE_TARGET_ALLOWLIST:-} # restrict which Odoo hosts may be targeted
     secrets:
       - api_tokens
     volumes:
