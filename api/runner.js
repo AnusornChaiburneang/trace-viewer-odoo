@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const { compileFlow, restoreFlow } = require('./compile');
 const { textFor } = require('./validate');
 const { renderMarkdown, renderHtml } = require('./manual');
+const { stepChecks, extractFinalFrame } = require('./report');
 const { writeZip } = require('./zip');
 
 const KIT = path.resolve(__dirname, '..');
@@ -107,7 +108,7 @@ async function executeRun({ store, run, secrets, control, log = () => {} }) {
       // Transaction titles may use values captured by earlier transactions.
       const title = textFor(tx.title, lang).replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g, (m, k) => (k in exported ? String(exported[k]) : m));
       const base = { id: tx.id, title, status: 'skipped', error: null, failed_step: null,
-        captured: {}, trace: null, log: null, steps: [] };
+        captured: {}, trace: null, log: null, final_screenshot: null, steps: [] };
       const failedDep = tx.depends_on.find(d => (txResults.find(r => r.id === d) || {}).status !== 'passed');
       if (control.cancelled) { base.error = 'cancelled'; txResults.push(base); continue; }
       if (stopAll) { base.error = stopReason || 'skipped after an earlier failure (on_failure: stop)'; txResults.push(base); continue; }
@@ -132,14 +133,18 @@ async function executeRun({ store, run, secrets, control, log = () => {} }) {
         const failed = (r.steps || []).find(s => s.status !== 'passed');
         base.error = res.signal ? `transaction timed out (${run.options.transaction_timeout_s}s)` : (failed ? `${failed.command}: ${failed.error}` : r.error || null);
         base.captured = r.captured || {};
-        if (copyIfExists(r.trace_file, path.join(dest, 'trace.zip'))) base.trace = `${lang}/${tx.id}/trace.zip`;
+        if (copyIfExists(r.trace_file, path.join(dest, 'trace.zip'))) {
+          base.trace = `${lang}/${tx.id}/trace.zip`;
+          if (extractFinalFrame(path.join(dest, 'trace.zip'), path.join(dest, 'final.jpeg'))) base.final_screenshot = `${lang}/${tx.id}/final.jpeg`;
+        }
         if (copyIfExists(r.log_file, path.join(dest, 'run.log'))) base.log = `${lang}/${tx.id}/run.log`;
         fs.writeFileSync(path.join(dest, 'result.json'), JSON.stringify(r, null, 2));
         base.steps = (r.manual && r.manual.steps || []).map(s => {
           let shot = null;
           if (s.screenshot && copyIfExists(path.join(outDir, s.screenshot), path.join(dest, 'shots', path.basename(s.screenshot))))
             shot = `${lang}/${tx.id}/shots/${path.basename(s.screenshot)}`;
-          return { no: s.no, title: s.title, description: s.description || null, status: s.status, error: s.error, screenshot: shot };
+          return { no: s.no, title: s.title, description: s.description || null, status: s.status, error: s.error, screenshot: shot,
+            checks: stepChecks(r, s) };
         });
         const firstBad = base.steps.find(s => s.status !== 'passed');
         if (firstBad) base.failed_step = firstBad.no;

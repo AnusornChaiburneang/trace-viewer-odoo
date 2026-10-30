@@ -127,6 +127,21 @@ const PASSWORD = 'test-pass';
   assert.match(md, /!\[กรอกจำนวน\]\(\.\.\/th_TH\/T1\/shots\/01-step\.png\)/);
   const html = (await call('GET', `/runs/${id}/manual.html?lang=en_US`)).buf.toString();
   assert.match(html, /<h3>Step 1\.1 Enter the amount<\/h3>/); assert.match(html, /data:image\/png;base64,/);
+  // Test report: per-step checks in the manifest, last screen per transaction, report.html on request.
+  assert.deepEqual(t1.steps[0].checks.map(c => [c.kind, c.label, c.status]),
+    [['expect', 'value #amount 5', 'passed'], ['mark', 'Amount', 'passed']]);
+  assert.deepEqual(t1.steps[1].checks.map(c => [c.kind, c.label, c.status]),
+    [['expect', 'visible #hello', 'passed'], ['capture', 'so_name = S00042', 'passed'], ['capture', 'greeting = Hello', 'passed']]);
+  assert.equal(t1.final_screenshot, 'en_US/T1/final.jpeg');
+  assert(entries['en_US/T1/final.jpeg'], 'bundle is missing the last-screen frame');
+  assert.equal(done.links.report_html, `${done.links.self}/report.html`);
+  const rep = await call('GET', `/runs/${id}/report.html?lang=th_TH`);
+  assert.equal(rep.status, 200); assert.match(rep.type, /text\/html/);
+  const repHtml = rep.buf.toString();
+  assert.match(repHtml, /รายงานผลทดสอบ/); assert.match(repHtml, /T1\.1 กรอกจำนวน/); assert.match(repHtml, /✓ value #amount 5/);
+  assert.match(repHtml, /data:image\/png;base64,/); assert.match(repHtml, /data:image\/jpeg;base64,/);
+  assert(!repHtml.includes(PASSWORD), 'report must not contain the password');
+  assert.equal((await call('GET', `/runs/${id}/report.html?lang=de_DE`)).status, 404);
   assert.equal((await call('GET', `/runs/${id}/files/en_US/T1/shots/01-enter-the-amount.png`)).type, 'image/png');
   assert.equal((await call('GET', `/runs/${id}/files/..%2Frun.json`)).status, 400);
   assert.equal((await call('GET', `/runs/${id}/tx/T2/trace.zip?lang=th_TH`)).status, 200);
@@ -157,6 +172,12 @@ const PASSWORD = 'test-pass';
   const failMd = fs.readFileSync(path.join(tmp, 'runs', r.json.run_id, 'bundle', 'manual', 'en_US.md'), 'utf8');
   assert.match(failMd, /did not complete in the automated run/);
   assert(!/!\[Missing element\]/.test(failMd), 'failed step screenshot must not be in the manual');
+  const failCheck = (await call('GET', `/runs/${r.json.run_id}/manifest`)).json.results.en_US.transactions[0].steps[0].checks[0];
+  assert.deepEqual([failCheck.kind, failCheck.label, failCheck.status], ['expect', 'visible #nope', 'failed']);
+  assert(failCheck.error, 'a failed check carries its error');
+  const failRep = (await call('GET', `/runs/${r.json.run_id}/report.html`)).buf.toString();
+  assert.match(failRep, /✗ visible #nope/); assert.match(failRep, /Depends on A|depends on A/);
+  assert.match(failRep, /class="fail"/, 'the test report lists failures (unlike the manual)');
   r = await call('POST', '/runs', failing('stop'));
   res = await waitDone(r.json.run_id);
   assert.equal(res.status, 'failed');

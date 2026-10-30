@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { Store } = require('./store');
 const { validateRun } = require('./validate');
 const { executeRun, buildBundle, staticChecks } = require('./runner');
+const { renderReport } = require('./report');
 
 const VERSION = require('../package.json').version;
 
@@ -55,7 +56,8 @@ function createApp(env = process.env) {
 
   const links = (id) => {
     const b = `${publicUrl}/api/v1/runs/${id}`;
-    return { self: b, manifest: `${b}/manifest`, bundle: `${b}/bundle.zip`, manual_md: `${b}/manual.md`, manual_html: `${b}/manual.html` };
+    return { self: b, manifest: `${b}/manifest`, bundle: `${b}/bundle.zip`, manual_md: `${b}/manual.md`, manual_html: `${b}/manual.html`,
+      report_html: `${b}/report.html` };
   };
   const summary = (run) => ({
     run_id: run.id, status: run.status, client: run.client, created_at: run.created_at,
@@ -152,7 +154,7 @@ function createApp(env = process.env) {
     req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(Object.assign(new Error('body is not valid JSON'), { status: 400 })); } });
     req.on('error', reject);
   });
-  const TYPES = { '.png': 'image/png', '.json': 'application/json', '.zip': 'application/zip', '.md': 'text/markdown; charset=utf-8', '.html': 'text/html; charset=utf-8', '.log': 'text/plain; charset=utf-8' };
+  const TYPES = { '.png': 'image/png', '.jpeg': 'image/jpeg', '.json': 'application/json', '.zip': 'application/zip', '.md': 'text/markdown; charset=utf-8', '.html': 'text/html; charset=utf-8', '.log': 'text/plain; charset=utf-8' };
 
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
@@ -224,6 +226,18 @@ function createApp(env = process.env) {
       const lang = url.searchParams.get('lang') || run.langs[0];
       if (!run.langs.includes(lang)) return send(res, 404, { error: `run has no language ${lang}` });
       return sendFile(res, path.join(bundleDir, 'manual', `${lang}.${mm[1]}`), TYPES[`.${mm[1]}`]);
+    }
+    if (sub === '/report.html') {
+      const lang = url.searchParams.get('lang') || run.langs[0];
+      if (!run.langs.includes(lang)) return send(res, 404, { error: `run has no language ${lang}` });
+      const mf = path.join(bundleDir, 'manifest.json');
+      if (!fs.existsSync(mf)) return send(res, 404, { error: 'not found' });
+      const manifest = JSON.parse(fs.readFileSync(mf, 'utf8'));
+      if (!manifest.results || !manifest.results[lang]) return send(res, 404, { error: `run has no results for ${lang}` });
+      // Rendered on request so the bundle does not carry every screenshot twice.
+      const html = Buffer.from(renderReport(manifest, lang, store.dir(run.id)), 'utf8');
+      res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Content-Length': html.length, 'Cache-Control': 'no-store' });
+      return res.end(html);
     }
     const tm = sub.match(/^\/tx\/([A-Za-z][A-Za-z0-9_]*)\/trace\.zip$/);
     if (tm) {
